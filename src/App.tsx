@@ -419,7 +419,7 @@ export default function App() {
               欢迎使用 ClipNote 云端剪切板
             </h1>
             <p className="text-sm text-neutral-600 leading-relaxed">
-              无需邮箱验证即可注册专属账号（密码长度 12-20 个字符，已注册账号不可重复注册，密码连续输错 3 次暂停登录 15 分钟）。每个账号支持保存最多 1000 条记录。
+              无需邮箱验证即可注册专属账号（密码长度 12-20 个字符，已注册账号不可重复注册，密码连续输错 3 次暂停登录 4 小时，之后每次输错暂停时间翻倍）。每个账号支持保存最多 1000 条记录。
             </p>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
@@ -912,7 +912,7 @@ export default function App() {
       {/* Minimalist Footer */}
       <footer className="py-4 px-6 border-t border-neutral-200 bg-white text-xs text-neutral-400 flex flex-wrap items-center justify-between gap-2">
         <span>ClipNote 云端剪切板 · 单账号最高保存 1000 条记录 · 单条上限 5000 字符</span>
-        <span>免邮箱注册 · 12-20 位密码保护 · 连续输错 3 次暂停 15 分钟</span>
+        <span>免邮箱注册 · 12-20 位密码保护 · 输错 3 次暂停 4 小时，之后每次输错翻倍</span>
       </footer>
 
       {/* Auth Modal */}

@@ -77,7 +77,13 @@ export function normalizeUsername(username: string): string {
 export function validateUsername(username: string): ValidationResult {
   const trimmed = username.trim();
   if (!trimmed) {
-    return { valid: false, error: '请输入账号名称' };
+    return { valid: false, error: '请输入用户名或邮箱' };
+  }
+  if (trimmed.includes('@')) {
+    if (trimmed.length > 254 || !/^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(trimmed)) {
+      return { valid: false, error: '请输入有效邮箱地址（最多 254 个字符）' };
+    }
+    return { valid: true };
   }
   if (trimmed.length < 3 || trimmed.length > 24) {
     return { valid: false, error: '账号名称长度需为 3-24 个字符' };

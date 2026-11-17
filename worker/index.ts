@@ -7,7 +7,7 @@ interface Env {
 }
 interface User {
   id: string; username: string; display_name: string; password_hash: string; salt: string;
-  failed_attempts: number; locked_until: number; categories: string; revision: number; created_at: string;
+  failed_attempts: number; locked_until: number; lock_level: number; categories: string; revision: number; created_at: string;
 }
 const defaults = ['未分类', '代码片段', '终端命令', '常用链接', '文案灵感'];
 const encoder = new TextEncoder();
@@ -36,10 +36,11 @@ async function startSession(request: Request, env: Env, user: User, remember: bo
   const token = random();
   const now = Date.now();
   const oldHash = await tokenHash(request);
-  await env.DB.batch([
+  const results = await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE expires_at <= ? OR token_hash = ?').bind(now, oldHash),
-    env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, remember) VALUES (?, ?, ?, ?)').bind(await digest(token), user.id, now + (remember ? 30 : 1) * 86400000, remember ? 1 : 0),
+    env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, remember) SELECT ?, id, ?, ? FROM users WHERE id = ? AND locked_until <= ?').bind(await digest(token), now + (remember ? 30 : 1) * 86400000, remember ? 1 : 0, user.id, now),
   ]);
+  if (!results[1].meta.changes) return fail('账号登录已暂停，请稍后重试', 429);
   return json(await workspace(env, user, remember), 200, { 'Set-Cookie': cookie(token, remember) });
 }
 export function validWorkspace(body: any): body is { categories: string[]; items: ClipboardItem[]; revision: number } {
@@ -66,7 +67,10 @@ async function api(request: Request, env: Env) {
     const body = await request.json() as any;
     if (!body || typeof body.username !== 'string' || typeof body.password !== 'string' || typeof body.remember !== 'boolean') return fail('账号信息无效');
     const { username, password, remember } = body;
-    if (!validateUsername(username).valid || !validatePassword(password).valid) return fail('账号需 3-24 个字符，密码需 12-20 个字符');
+    const usernameCheck = validateUsername(username);
+    if (!usernameCheck.valid) return fail(usernameCheck.error!);
+    if (path === '/api/register' && !validatePassword(password).valid) return fail('密码需 12-20 个字符');
+    if (!password || password.length > 1000) return fail('请输入有效密码');
     const key = normalizeUsername(username);
     let user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(key).first<User>();
     if (path === '/api/register') {
@@ -80,13 +84,23 @@ async function api(request: Request, env: Env) {
       user = (await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first<User>())!;
     } else {
       if (!user) { await hashPassword(password, 'unknown-account'); return fail('账号或密码错误', 401); }
-      if (user.locked_until > Date.now()) return fail('账号暂时锁定，请 15 分钟后重试', 429);
+      const paused = (until: number) => json({ error: `登录已暂停，请于 ${new Date(until).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}（北京时间）后重试`, retryAt: until }, 429, { 'Retry-After': String(Math.max(1, Math.ceil((until - Date.now()) / 1000))) });
+      if (user.locked_until > Date.now()) return paused(user.locked_until);
       if (await hashPassword(password, user.salt) !== user.password_hash) {
-        await env.DB.prepare(`UPDATE users SET failed_attempts = CASE WHEN locked_until > 0 THEN 1 ELSE failed_attempts + 1 END,
-          locked_until = CASE WHEN locked_until = 0 AND failed_attempts >= 2 THEN ? ELSE 0 END WHERE id = ?`).bind(Date.now() + 900000, user.id).run();
-        return fail('账号或密码错误，连续输错 3 次将暂停登录 15 分钟', 401);
+        // shortcut: cap at JavaScript's last valid date; revisit if dates beyond year 275760 are needed.
+        const results = await env.DB.batch([
+          env.DB.prepare(`UPDATE users SET failed_attempts = failed_attempts + 1,
+            locked_until = CASE WHEN failed_attempts >= 2 THEN MIN(8640000000000000, ? + 14400000 * (1 << MIN(lock_level, 30))) ELSE 0 END,
+            lock_level = CASE WHEN failed_attempts >= 2 THEN MIN(lock_level + 1, 31) ELSE lock_level END
+            WHERE id = ? AND locked_until <= ?`).bind(Date.now(), user.id, Date.now()),
+          env.DB.prepare('SELECT locked_until FROM users WHERE id = ?').bind(user.id),
+        ]);
+        const until = (results[1].results[0] as { locked_until: number }).locked_until;
+        if (until > Date.now()) return paused(until);
+        return fail('账号或密码错误，连续输错 3 次暂停登录 4 小时，之后每次输错暂停时间翻倍', 401);
       }
-      await env.DB.prepare('UPDATE users SET failed_attempts = 0, locked_until = 0 WHERE id = ?').bind(user.id).run();
+      const reset = await env.DB.prepare('UPDATE users SET failed_attempts = 0, lock_level = 0, locked_until = 0 WHERE id = ? AND locked_until <= ?').bind(user.id, Date.now()).run();
+      if (!reset.meta.changes) return fail('账号登录已暂停，请稍后重试', 429);
     }
     return startSession(request, env, user, remember);
   }

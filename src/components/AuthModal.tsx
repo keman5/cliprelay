@@ -79,7 +79,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {mode === 'login' ? '账号登录与切换' : '注册新剪切板账号'}
             </h2>
             <p className="text-xs text-neutral-500 mt-0.5">
-              无需邮箱验证 · 密码 12-20 位 · 连续输错 3 次暂停登录 15 分钟
+              无需邮箱验证 · 密码 12-20 位 · 连续输错 3 次暂停登录 4 小时，之后每次输错暂停时间翻倍
             </p>
           </div>
           {canClose && (
@@ -155,7 +155,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               htmlFor="auth-username-input"
               className="block text-xs font-medium text-neutral-700 mb-1.5"
             >
-              账号名称 {mode === 'register' && <span className="text-neutral-400 font-normal">（注册后不可重复注册）</span>}
+              用户名或邮箱 {mode === 'register' && <span className="text-neutral-400 font-normal">（注册后不可重复注册）</span>}
             </label>
             <div className="relative">
               <User className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -167,7 +167,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   setUsername(e.target.value);
                   if (errorMsg) setErrorMsg(null);
                 }}
-                placeholder="输入 3-24 位账号名，如 studio_user"
+                placeholder="输入用户名（3-24 位）或邮箱地址"
                 autoComplete="username"
                 className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-neutral-300 rounded-md focus:outline-none focus:border-neutral-900 transition-colors"
               />

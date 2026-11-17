@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 const base = process.argv[2] || 'http://localhost:8787';
 const suffix = randomBytes(5).toString('hex');
-const names = [`verify_a_${suffix}`, `verify_b_${suffix}`];
+const names = [`verify.a.${suffix}@example.com`, `verify_b_${suffix}`];
 const password = randomBytes(9).toString('hex');
 const call = async (path, method = 'GET', body, cookie = '') => {
   const response = await fetch(base + '/api' + path, { method, headers: { Origin: new URL(base).origin, 'Content-Type': 'application/json', Cookie: cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -40,7 +40,15 @@ assert.equal((await call('/logout', 'POST', undefined, cookieA)).status, 200);
 assert.equal((await call('/session', 'GET', undefined, cookieA)).data, null);
 const login = await call('/login', 'POST', { username: names[0], password, remember: false });
 assert.equal(login.status, 200);
-for (let i = 0; i < 3; i++) assert.equal((await call('/login', 'POST', { username: names[1], password: 'WrongPassword123', remember: false })).status, 401);
+for (let i = 0; i < 3; i++) {
+  const failure = await call('/login', 'POST', { username: names[1], password: 'WrongPassword123', remember: false });
+  assert.equal(failure.status, i < 2 ? 401 : 429);
+  if (i === 2) {
+    assert.ok(failure.data.retryAt - Date.now() > 14390000);
+    assert.ok(Number(failure.headers.get('Retry-After')) <= 14400);
+  }
+}
+assert.deepEqual((await call('/session', 'GET', undefined, b.cookie)).data.account.items, [item]);
 assert.equal((await call('/login', 'POST', { username: names[1], password, remember: false })).status, 429);
 await call('/logout', 'POST', undefined, login.cookie);
 await call('/logout', 'POST', undefined, b.cookie);

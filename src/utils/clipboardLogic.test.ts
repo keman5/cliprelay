@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validatePassword,
+  validateUsername,
+  normalizeUsername,
   addClipboardItem,
   toggleFavoriteItem,
   deleteClipboardItem,
@@ -16,6 +18,19 @@ import {
   createInitialDatabase,
   MAX_ITEMS_PER_ACCOUNT,
 } from './clipboardLogic';
+
+test('account names accept email addresses and keep existing usernames valid', () => {
+  for (const value of ['keman.wu@outlook.com', 'long.email.address+clipnote@outlook.com', ' studio_user ', '中文账号']) {
+    assert.equal(validateUsername(value).valid, true, value);
+  }
+  assert.equal(validateUsername('a'.repeat(242) + '@example.com').valid, true);
+  for (const value of ['', 'ab', 'a'.repeat(25), 'name@', '@example.com', 'a@@example.com', 'a b@example.com', 'a@example..com', 'a'.repeat(243) + '@example.com']) {
+    assert.equal(validateUsername(value).valid, false, value);
+  }
+  assert.equal(normalizeUsername(' Keman.Wu@Outlook.COM '), 'keman.wu@outlook.com');
+  assert.match(validateUsername('bad@email').error!, /邮箱/);
+  assert.match(validateUsername('bad.name').error!, /仅支持/);
+});
 
 test('password validation strictly enforces 12-20 characters', () => {
   assert.equal(validatePassword('short123456').valid, false); // 11 chars
