@@ -1,0 +1,6 @@
+{
+  "name": "ClipNote 极简公开剪切板",
+  "description": "极简设计的公开云端剪切板工具，支持12-20位密码无邮箱注册、3次输错锁定、5000字回车速存、分类与标签管理、时间线归档及分页浏览。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
