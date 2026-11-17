@@ -18,8 +18,6 @@ import {
   MAX_ITEMS_PER_ACCOUNT,
   createInitialDatabase,
   normalizeUsername,
-  registerAccount,
-  authenticateAccount,
   addClipboardItem,
   toggleFavoriteItem,
   deleteClipboardItem,
@@ -38,70 +36,17 @@ import { ClipboardItemRow } from './components/ClipboardItemRow';
 import { AuthModal } from './components/AuthModal';
 import { CategoryManagerModal } from './components/CategoryManagerModal';
 
-const DB_STORAGE_KEY = 'clipnote_public_db_v1';
-const REMEMBER_USER_KEY = 'clipnote_remembered_user_v1';
-const SESSION_USER_KEY = 'clipnote_session_user_v1';
-
-function loadDatabase(): ClipboardDatabase {
-  try {
-    const raw = localStorage.getItem(DB_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as ClipboardDatabase;
-      if (parsed && parsed.accounts && typeof parsed.accounts === 'object') {
-        return parsed;
-      }
-    }
-  } catch {
-    // Fallback to initial seed database
-  }
-  const initial = createInitialDatabase();
-  try {
-    localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(initial));
-  } catch {
-    // Ignore storage quota errors
-  }
-  return initial;
-}
-
-function saveDatabase(db: ClipboardDatabase): void {
-  try {
-    localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(db));
-  } catch {
-    // Ignore storage quota errors
-  }
-}
-
-function loadInitialUsername(db: ClipboardDatabase): { username: string | null; remember: boolean } {
-  try {
-    const remembered = localStorage.getItem(REMEMBER_USER_KEY);
-    if (remembered) {
-      if (remembered === '__LOGGED_OUT__') {
-        return { username: null, remember: true };
-      }
-      const key = normalizeUsername(remembered);
-      if (db.accounts[key] && !db.accounts[key].locked) {
-        return { username: key, remember: true };
-      }
-    }
-    const sessionUser = sessionStorage.getItem(SESSION_USER_KEY);
-    if (sessionUser) {
-      const key = normalizeUsername(sessionUser);
-      if (db.accounts[key] && !db.accounts[key].locked) {
-        return { username: key, remember: false };
-      }
-    }
-  } catch {
-    // Fallback
-  }
-  // Default to demo_creator so the workspace is immediately interactive on first load
-  return { username: 'demo_creator', remember: true };
-}
+import { api, type SessionData } from './utils/api';
 
 export default function App() {
-  const [db, setDb] = useState<ClipboardDatabase>(() => loadDatabase());
-  const initialAuth = loadInitialUsername(db);
-  const [activeUserKey, setActiveUserKey] = useState<string | null>(initialAuth.username);
-  const [rememberMe, setRememberMe] = useState<boolean>(initialAuth.remember);
+  const [db, setDb] = useState<ClipboardDatabase>(createInitialDatabase);
+  const [activeUserKey, setActiveUserKey] = useState<string | null>(null);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const revision = useRef(0);
 
   // Composer state
   const [composerContent, setComposerContent] = useState('');
@@ -130,105 +75,74 @@ export default function App() {
 
   const currentUser = activeUserKey ? db.accounts[activeUserKey] ?? null : null;
 
+  const applySession = (data: SessionData) => {
+    const key = normalizeUsername(data.account.username);
+    revision.current = data.revision;
+    setDb({ accounts: { [key]: data.account } });
+    setActiveUserKey(key);
+    setRememberMe(data.remember);
+    setNetworkError(null);
+  };
+
   useEffect(() => {
-    saveDatabase(db);
-  }, [db]);
+    api<SessionData | null>('/session').then((data) => {
+      if (data) applySession(data);
+    }).catch((error) => setNetworkError(error.message)).finally(() => setLoading(false));
+  }, []);
 
-  const mutateDb = (updater: (draft: ClipboardDatabase) => void) => {
-    setDb((prev) => {
-      const clone: ClipboardDatabase = JSON.parse(JSON.stringify(prev));
-      updater(clone);
-      saveDatabase(clone);
-      return clone;
-    });
-  };
-
-  // Auth Handlers
-  const persistSession = (userKey: string | null, remember: boolean) => {
+  const saveDatabase = async (next: ClipboardDatabase): Promise<boolean> => {
+    if (!activeUserKey || busy.current) { setNetworkError('正在保存，请稍后再试'); return false; }
+    busy.current = true;
+    setSaving(true);
     try {
-      if (!userKey) {
-        localStorage.setItem(REMEMBER_USER_KEY, '__LOGGED_OUT__');
-        sessionStorage.removeItem(SESSION_USER_KEY);
-        return;
-      }
-      if (remember) {
-        localStorage.setItem(REMEMBER_USER_KEY, userKey);
-        sessionStorage.removeItem(SESSION_USER_KEY);
-      } else {
-        localStorage.removeItem(REMEMBER_USER_KEY);
-        sessionStorage.setItem(SESSION_USER_KEY, userKey);
-      }
-    } catch {
-      // Ignore storage errors
-    }
+      const data = await api<{ revision: number }>('/workspace', {
+        method: 'PUT', body: JSON.stringify({ ...next.accounts[activeUserKey], revision: revision.current }),
+      });
+      revision.current = data.revision;
+      setDb(next);
+      setNetworkError(null);
+      return true;
+    } catch (error) {
+      setNetworkError(error instanceof Error ? error.message : '保存失败，请重试');
+      return false;
+    } finally { busy.current = false; setSaving(false); }
   };
 
-  const handleLogin = (username: string, password: string, remember: boolean) => {
-    const clone: ClipboardDatabase = JSON.parse(JSON.stringify(db));
-    const res = authenticateAccount(clone, username, password);
-    setDb(clone);
-    saveDatabase(clone);
+  const mutateDb = async (updater: (draft: ClipboardDatabase) => void) => {
+    const clone = structuredClone(db);
+    updater(clone);
+    return saveDatabase(clone);
+  };
 
-    if (res.ok && res.account) {
-      const key = normalizeUsername(res.account.username);
-      setActiveUserKey(key);
-      setRememberMe(remember);
-      persistSession(key, remember);
-      setCategoryTab('ALL');
-      setTimelineKey('ALL');
-      setTagFilter('');
-      setPage(1);
+  const handleAuth = async (mode: 'login' | 'register', username: string, password: string, remember: boolean) => {
+    if (busy.current || loading) return { ok: false, error: '正在连接，请稍后再试' };
+    busy.current = true;
+    try {
+      const data = await api<SessionData>('/' + mode, { method: 'POST', body: JSON.stringify({ username, password, remember }) });
+      applySession(data);
+      setCategoryTab('ALL'); setTimelineKey('ALL'); setTagFilter(''); setPage(1);
+      setComposerContent(''); setComposerTagsInput(''); setComposerNotice(null);
       setIsAuthModalOpen(false);
       return { ok: true };
-    }
-    return { ok: false, error: res.error };
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '连接失败' }; }
+    finally { busy.current = false; }
   };
-
-  const handleRegister = (username: string, password: string, remember: boolean) => {
-    const clone: ClipboardDatabase = JSON.parse(JSON.stringify(db));
-    const res = registerAccount(clone, username, password);
-    if (res.ok && res.account) {
-      setDb(clone);
-      saveDatabase(clone);
-      const key = normalizeUsername(res.account.username);
-      setActiveUserKey(key);
-      setRememberMe(remember);
-      persistSession(key, remember);
-      setCategoryTab('ALL');
-      setTimelineKey('ALL');
-      setTagFilter('');
-      setPage(1);
-      setIsAuthModalOpen(false);
-      return { ok: true };
-    }
-    return { ok: false, error: res.error };
-  };
-
-  const handleLogout = () => {
-    setActiveUserKey(null);
-    persistSession(null, rememberMe);
-    setIsAuthModalOpen(true);
-  };
-
-  const handleQuickDemoLogin = () => {
-    const clone: ClipboardDatabase = JSON.parse(JSON.stringify(db));
-    if (!clone.accounts['demo_creator']) {
-      const seed = createInitialDatabase();
-      clone.accounts['demo_creator'] = seed.accounts['demo_creator'];
-    } else {
-      clone.accounts['demo_creator'].locked = false;
-      clone.accounts['demo_creator'].failedAttempts = 0;
-    }
-    setDb(clone);
-    saveDatabase(clone);
-    setActiveUserKey('demo_creator');
-    setRememberMe(true);
-    persistSession('demo_creator', true);
-    setIsAuthModalOpen(false);
+  const handleLogin = (username: string, password: string, remember: boolean) => handleAuth('login', username, password, remember);
+  const handleRegister = (username: string, password: string, remember: boolean) => handleAuth('register', username, password, remember);
+  const handleLogout = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      await api('/logout', { method: 'POST' });
+      setActiveUserKey(null); setDb(createInitialDatabase());
+      setComposerContent(''); setComposerTagsInput(''); setComposerNotice(null);
+      setIsAuthModalOpen(true);
+    } catch (error) { setNetworkError(error instanceof Error ? error.message : '退出失败'); }
+    finally { busy.current = false; }
   };
 
   // Clipboard Entry Creation
-  const handleCreateEntry = (overrideText?: string) => {
+  const handleCreateEntry = async (overrideText?: string) => {
     if (!currentUser || !activeUserKey) {
       setIsAuthModalOpen(true);
       return;
@@ -253,8 +167,7 @@ export default function App() {
       return;
     }
 
-    setDb(clone);
-    saveDatabase(clone);
+    if (!await saveDatabase(clone)) return;
     setComposerContent('');
     setComposerTagsInput('');
     setTimelineKey('ALL');
@@ -327,11 +240,12 @@ export default function App() {
     });
   };
 
-  const handleClearAllConfirmed = () => {
+  const handleClearAllConfirmed = async () => {
     if (!activeUserKey) return;
-    mutateDb((draft) => {
+    const saved = await mutateDb((draft) => {
       clearAllClipboardItems(draft.accounts[activeUserKey], categoryTab);
     });
+    if (!saved) return;
     setConfirmClearAll(false);
     setPage(1);
   };
@@ -358,24 +272,22 @@ export default function App() {
   };
 
   // Category Management
-  const handleAddCategory = (name: string) => {
+  const handleAddCategory = async (name: string) => {
     if (!activeUserKey) return { valid: false, error: '未登录' };
     const clone: ClipboardDatabase = JSON.parse(JSON.stringify(db));
     const res = addCategory(clone.accounts[activeUserKey], name);
     if (res.valid) {
-      setDb(clone);
-      saveDatabase(clone);
+      if (!await saveDatabase(clone)) return { valid: false, error: '保存失败，请查看页面提示后重试' };
     }
     return res;
   };
 
-  const handleRenameCategory = (oldName: string, newName: string) => {
+  const handleRenameCategory = async (oldName: string, newName: string) => {
     if (!activeUserKey) return { valid: false, error: '未登录' };
     const clone: ClipboardDatabase = JSON.parse(JSON.stringify(db));
     const res = renameCategory(clone.accounts[activeUserKey], oldName, newName);
     if (res.valid) {
-      setDb(clone);
-      saveDatabase(clone);
+      if (!await saveDatabase(clone)) return { valid: false, error: '保存失败，请查看页面提示后重试' };
       if (categoryTab === oldName) {
         setCategoryTab(newName.trim());
       }
@@ -414,17 +326,10 @@ export default function App() {
     pageSize,
   });
 
-  const registeredUsernames = (Object.values(db.accounts) as ClipboardDatabase['accounts'][string][]).map((acc) => ({
-    username: acc.username,
-    locked: acc.locked,
-    itemCount: acc.items.length,
-    failedAttempts: acc.failedAttempts,
-  }));
-
   return (
     <div className="min-h-screen flex flex-col bg-[#FAFAFA] text-neutral-900">
       {/* Strict 3-Zone Top Bar Contract */}
-      <header className="flex items-center justify-between gap-8 px-6 py-3.5 bg-white border-b border-neutral-200">
+      <header className="flex flex-wrap items-center justify-between gap-4 px-4 sm:px-6 py-3.5 bg-white border-b border-neutral-200">
         {/* Zone 1: Single text element wordmark */}
         <a
           href="#top"
@@ -492,11 +397,11 @@ export default function App() {
         </nav>
 
         {/* Zone 3: 1 primary action button */}
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center shrink-0 max-w-full">
           <button
             type="button"
             onClick={() => setIsAuthModalOpen(true)}
-            className="py-2 px-4 text-xs font-medium text-white bg-neutral-900 hover:bg-neutral-800 rounded-md transition-colors whitespace-nowrap shrink-0"
+            className="py-2 px-4 text-xs font-medium text-white bg-neutral-900 hover:bg-neutral-800 rounded-md transition-colors whitespace-nowrap shrink-0 max-w-full truncate"
           >
             {currentUser ? `切换账号 (@${currentUser.username})` : '登录 / 免邮箱注册'}
           </button>
@@ -505,14 +410,16 @@ export default function App() {
 
       {/* Main Content Container */}
       <main className="flex-1 w-full max-w-[1360px] mx-auto px-4 sm:px-6 py-6">
-        {!currentUser ? (
+        {saving && <p role="status" className="mb-3 text-sm text-neutral-500">正在保存到云端…</p>}
+        {networkError && <p role="alert" className="mb-4 p-3 bg-red-50 text-red-700 text-sm">{networkError} <button type="button" className="underline" onClick={() => window.location.reload()}>重新加载云端数据</button></p>}
+        {loading ? <p role="status" className="text-center p-12">正在连接 ClipNote…</p> : !currentUser ? (
           /* Logged-out Minimalist Landing Prompt */
           <div className="max-w-lg mx-auto my-12 bg-white border border-neutral-200 rounded-lg p-8 text-center space-y-4">
             <h1 className="text-xl font-semibold text-neutral-900">
-              欢迎使用 ClipNote 公开云端剪切板
+              欢迎使用 ClipNote 云端剪切板
             </h1>
             <p className="text-sm text-neutral-600 leading-relaxed">
-              无需邮箱验证即可注册专属账号（密码长度 12-20 个字符，已注册账号不可重复注册，密码连续输错 3 次自动锁定）。每个账号支持保存最多 1000 条记录。
+              无需邮箱验证即可注册专属账号（密码长度 12-20 个字符，已注册账号不可重复注册，密码连续输错 3 次暂停登录 15 分钟）。每个账号支持保存最多 1000 条记录。
             </p>
             <div className="flex items-center justify-center gap-3 pt-2">
               <button
@@ -522,17 +429,11 @@ export default function App() {
               >
                 登录 / 注册新账号
               </button>
-              <button
-                type="button"
-                onClick={handleQuickDemoLogin}
-                className="py-2.5 px-5 text-xs font-medium text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-md transition-colors whitespace-nowrap"
-              >
-                直接进入公开演示账号
-              </button>
+
             </div>
           </div>
         ) : (
-          <div className="flex flex-col lg:flex-row items-stretch gap-6">
+          <div inert={saving} aria-busy={saving} className="flex flex-col lg:flex-row items-stretch gap-6">
             {/* Left Sidebar: Chronological Timeline */}
             <TimelineSidebar
               buckets={timelineBuckets}
@@ -1010,22 +911,20 @@ export default function App() {
 
       {/* Minimalist Footer */}
       <footer className="py-4 px-6 border-t border-neutral-200 bg-white text-xs text-neutral-400 flex flex-wrap items-center justify-between gap-2">
-        <span>ClipNote 公开剪切板 · 单账号最高保存 1000 条记录 · 单条上限 5000 字符</span>
-        <span>免邮箱注册 · 12-20 位密码保护 · 连续输错 3 次锁定</span>
+        <span>ClipNote 云端剪切板 · 单账号最高保存 1000 条记录 · 单条上限 5000 字符</span>
+        <span>免邮箱注册 · 12-20 位密码保护 · 连续输错 3 次暂停 15 分钟</span>
       </footer>
 
       {/* Auth Modal */}
       <AuthModal
         isOpen={isAuthModalOpen}
-        canClose={Boolean(currentUser)}
+        canClose={true}
         currentUser={currentUser}
         rememberMe={rememberMe}
-        registeredUsernames={registeredUsernames}
         onClose={() => setIsAuthModalOpen(false)}
         onLogin={handleLogin}
         onRegister={handleRegister}
         onLogout={handleLogout}
-        onQuickDemoLogin={handleQuickDemoLogin}
       />
 
       {/* Category Manager Modal */}

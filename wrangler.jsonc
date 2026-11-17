@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clipnote",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-11-17",
+  "assets": { "directory": "./dist", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": ["/api/*"] },
+  "d1_databases": [{ "binding": "DB", "database_name": "clipnote", "database_id": "3b947b1c-954b-4a51-9eee-653094182259", "migrations_dir": "migrations" }],
+  "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1081", "simple": { "limit": 10, "period": 60 } }],
+  "routes": [{ "pattern": "clipnote.macseek.cc", "custom_domain": true }]
+}

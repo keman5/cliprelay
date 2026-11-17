@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+const base = process.argv[2] || 'http://localhost:8787';
+const suffix = randomBytes(5).toString('hex');
+const names = [`verify_a_${suffix}`, `verify_b_${suffix}`];
+const password = randomBytes(9).toString('hex');
+const call = async (path, method = 'GET', body, cookie = '') => {
+  const response = await fetch(base + '/api' + path, { method, headers: { Origin: new URL(base).origin, 'Content-Type': 'application/json', Cookie: cookie }, body: body === undefined ? undefined : JSON.stringify(body) });
+  return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0], headers: response.headers };
+};
+assert.equal((await call('/session')).data, null);
+assert.equal((await call('/workspace', 'PUT', {})).status, 401);
+let a = await call('/register', 'POST', { username: names[0], password, remember: true });
+assert.equal(a.status, 200);
+assert.equal(a.data.account.items.length, 0);
+assert.equal('password' in a.data.account, false);
+assert.match(a.headers.get('set-cookie'), /HttpOnly; Secure; SameSite=Lax; Max-Age=2592000/);
+const cookieA = a.cookie;
+assert.equal((await call('/register', 'POST', { username: names[0].toUpperCase(), password, remember: false })).status, 409);
+const item = { id: 'verify_item', content: 'private note 中文', category: '未分类', tags: ['test'], favorite: true, createdAt: new Date().toISOString() };
+const state = { ...a.data.account, revision: 0, items: [item] };
+assert.equal((await call('/workspace', 'PUT', state, cookieA)).status, 200);
+assert.equal((await call('/workspace', 'PUT', { ...state, items: [] }, cookieA)).status, 409);
+a = await call('/session', 'GET', undefined, cookieA);
+assert.deepEqual(a.data.account.items, [item]);
+const b = await call('/register', 'POST', { username: names[1], password, remember: false });
+assert.equal(b.status, 200);
+assert.doesNotMatch(b.headers.get('set-cookie'), /Max-Age/);
+assert.equal(b.data.account.items.length, 0);
+assert.equal((await call('/workspace', 'PUT', { ...state, username: names[0] }, b.cookie)).status, 200);
+assert.deepEqual((await call('/session', 'GET', undefined, cookieA)).data.account.items, [item]);
+assert.equal((await call('/workspace', 'PUT', { ...state, revision: 1, items: [{ ...item, content: 'x'.repeat(5001) }] }, cookieA)).status, 400);
+if (base.includes('localhost') || base.includes('127.0.0.1')) {
+  const bulk = Array.from({ length: 1000 }, (_, i) => ({ ...item, id: `bulk_${i}`, content: '测'.repeat(5000) }));
+  assert.equal((await call('/workspace', 'PUT', { ...state, revision: 1, items: bulk }, cookieA)).status, 200);
+  assert.equal((await call('/session', 'GET', undefined, cookieA)).data.account.items.length, 1000);
+  assert.equal((await call('/workspace', 'PUT', { ...state, revision: 2, items: [] }, cookieA)).status, 200);
+}
+assert.equal((await call('/logout', 'POST', undefined, cookieA)).status, 200);
+assert.equal((await call('/session', 'GET', undefined, cookieA)).data, null);
+const login = await call('/login', 'POST', { username: names[0], password, remember: false });
+assert.equal(login.status, 200);
+for (let i = 0; i < 3; i++) assert.equal((await call('/login', 'POST', { username: names[1], password: 'WrongPassword123', remember: false })).status, 401);
+assert.equal((await call('/login', 'POST', { username: names[1], password, remember: false })).status, 429);
+await call('/logout', 'POST', undefined, login.cookie);
+await call('/logout', 'POST', undefined, b.cookie);
+console.log('PASS: registration, duplicate prevention, hashing boundary, session, persistence, isolation, conflict, validation, logout, login, temporary lockout' + (base.includes('localhost') ? ', 1000 × 5000 Unicode characters' : ''));
+console.log('Test users (cleanup via D1): ' + names.join(', '));

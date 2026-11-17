@@ -7,8 +7,8 @@ interface CategoryManagerModalProps {
   categories: string[];
   items: ClipboardItem[];
   onClose: () => void;
-  onAddCategory: (name: string) => { valid: boolean; error?: string };
-  onRenameCategory: (oldName: string, newName: string) => { valid: boolean; error?: string };
+  onAddCategory: (name: string) => Promise<{ valid: boolean; error?: string }>;
+  onRenameCategory: (oldName: string, newName: string) => Promise<{ valid: boolean; error?: string }>;
   onDeleteCategory: (name: string) => void;
 }
 
@@ -31,10 +31,10 @@ export const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
   const getCategoryCount = (cat: string) =>
     items.filter((it) => it.category === cat).length;
 
-  const handleAdd = (e: React.FormEvent) => {
+  const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-    const res = onAddCategory(newCategoryName);
+    const res = await onAddCategory(newCategoryName);
     if (!res.valid) {
       setErrorMsg(res.error || '添加分类失败');
     } else {
@@ -48,13 +48,13 @@ export const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
     setEditingValue(cat);
   };
 
-  const handleConfirmRename = (oldName: string) => {
+  const handleConfirmRename = async (oldName: string) => {
     setErrorMsg(null);
     if (editingValue.trim() === oldName) {
       setEditingCat(null);
       return;
     }
-    const res = onRenameCategory(oldName, editingValue);
+    const res = await onRenameCategory(oldName, editingValue);
     if (!res.valid) {
       setErrorMsg(res.error || '重命名失败');
     } else {

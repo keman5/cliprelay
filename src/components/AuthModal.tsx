@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, User, Eye, EyeOff, X, Check, AlertCircle, LogOut, ShieldCheck } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, X, Check, AlertCircle, LogOut } from 'lucide-react';
 import {
   MIN_PASSWORD_LENGTH,
   MAX_PASSWORD_LENGTH,
@@ -11,12 +11,10 @@ interface AuthModalProps {
   canClose: boolean;
   currentUser: UserAccount | null;
   rememberMe: boolean;
-  registeredUsernames: { username: string; locked: boolean; itemCount: number; failedAttempts: number }[];
   onClose: () => void;
-  onLogin: (username: string, password: string, remember: boolean) => { ok: boolean; error?: string };
-  onRegister: (username: string, password: string, remember: boolean) => { ok: boolean; error?: string };
+  onLogin: (username: string, password: string, remember: boolean) => Promise<{ ok: boolean; error?: string }>;
+  onRegister: (username: string, password: string, remember: boolean) => Promise<{ ok: boolean; error?: string }>;
   onLogout: () => void;
-  onQuickDemoLogin: () => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -24,13 +22,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   canClose,
   currentUser,
   rememberMe: initialRemember,
-  registeredUsernames,
   onClose,
   onLogin,
   onRegister,
   onLogout,
-  onQuickDemoLogin,
 }) => {
+  const [pending, setPending] = useState(false);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -45,30 +42,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const isPasswordLengthValid =
     passwordLen >= MIN_PASSWORD_LENGTH && passwordLen <= MAX_PASSWORD_LENGTH;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pending) return;
+    setPending(true);
     setErrorMsg(null);
     setSuccessMsg(null);
-
-    if (mode === 'register') {
-      const res = onRegister(username, password, remember);
-      if (!res.ok) {
-        setErrorMsg(res.error || '注册失败');
-      } else {
-        setSuccessMsg('注册并登录成功');
-        setUsername('');
-        setPassword('');
-      }
-    } else {
-      const res = onLogin(username, password, remember);
-      if (!res.ok) {
-        setErrorMsg(res.error || '登录失败');
-      } else {
-        setSuccessMsg('登录成功');
-        setUsername('');
-        setPassword('');
-      }
-    }
+    try {
+      const res = await (mode === 'register' ? onRegister : onLogin)(username, password, remember);
+      if (!res.ok) setErrorMsg(res.error || '操作失败');
+      else { setUsername(''); setPassword(''); }
+    } catch {
+      setErrorMsg('连接失败，请重试');
+    } finally { setPending(false); }
   };
 
   const switchMode = (nextMode: 'login' | 'register') => {
@@ -80,6 +66,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/40 backdrop-blur-[2px] p-4"
+      onKeyDown={(e) => { if (e.key === 'Escape' && canClose) onClose(); }}
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-dialog-title"
@@ -92,7 +79,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {mode === 'login' ? '账号登录与切换' : '注册新剪切板账号'}
             </h2>
             <p className="text-xs text-neutral-500 mt-0.5">
-              无需邮箱验证 · 密码 12-20 位 · 连续输错 3 次自动锁定
+              无需邮箱验证 · 密码 12-20 位 · 连续输错 3 次暂停登录 15 分钟
             </p>
           </div>
           {canClose && (
@@ -272,66 +259,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
           <button
             type="submit"
+            disabled={pending}
             className="w-full py-2.5 px-4 text-sm font-medium text-white bg-neutral-900 hover:bg-neutral-800 rounded-md transition-colors whitespace-nowrap"
           >
-            {mode === 'login' ? '立即登录' : '完成注册并登录'}
+            {pending ? '正在连接…' : mode === 'login' ? '立即登录' : '完成注册并登录'}
           </button>
         </form>
 
-        {/* Registered Accounts & Demo Quick Access */}
-        <div className="mt-5 pt-4 border-t border-neutral-200">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-neutral-600 flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5 text-neutral-500" />
-              已注册账号状态（支持一键体验演示账号）
-            </span>
-            <button
-              type="button"
-              onClick={onQuickDemoLogin}
-              className="text-xs font-medium text-neutral-900 underline underline-offset-4 hover:text-neutral-600 whitespace-nowrap"
-            >
-              一键登录演示账号
-            </button>
-          </div>
-          <div className="space-y-1.5 max-h-32 overflow-y-auto">
-            {registeredUsernames.map((acc) => (
-              <div
-                key={acc.username}
-                className="flex items-center justify-between text-xs py-1.5 px-2.5 bg-neutral-50 rounded border border-neutral-200/80"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-mono font-medium text-neutral-800 truncate">
-                    @{acc.username}
-                  </span>
-                  <span className="text-neutral-300" aria-hidden="true">·</span>
-                  <span className="text-neutral-500 tabular-nums">{acc.itemCount} 条</span>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {acc.locked ? (
-                    <span className="text-red-600 font-medium">已锁定 (输错3次)</span>
-                  ) : acc.failedAttempts > 0 ? (
-                    <span className="text-amber-700 tabular-nums">
-                      已错 {acc.failedAttempts}/3 次
-                    </span>
-                  ) : (
-                    <span className="text-neutral-500">状态正常</span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMode('login');
-                      setUsername(acc.username);
-                      setErrorMsg(null);
-                    }}
-                    className="text-neutral-900 hover:underline font-medium ml-1"
-                  >
-                    填入
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );
