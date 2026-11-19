@@ -1,0 +1,64 @@
+name: ClipRelay
+options:
+  deploymentTarget:
+    iOS: '17.0'
+    macOS: '14.0'
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MARKETING_VERSION: '0.1'
+    CURRENT_PROJECT_VERSION: 1
+    GENERATE_INFOPLIST_FILE: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEVELOPMENT_TEAM: B3ZTS6G82B
+    CODE_SIGN_STYLE: Automatic
+targets:
+  ClipRelayMac:
+    type: application
+    platform: macOS
+    sources: [Shared, App, Resources, Config/Icons.xcassets]
+    settings:
+      base:
+        PRODUCT_NAME: ClipRelay
+        PRODUCT_BUNDLE_IDENTIFIER: cc.macseek.cliprelay.mac
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Config/App.plist
+        ENABLE_HARDENED_RUNTIME: YES
+    scheme: {}
+  ClipRelayPhone:
+    type: application
+    platform: iOS
+    sources: [Shared, App, Resources, Config/Icons.xcassets]
+    dependencies:
+      - target: ClipRelayKeyboard
+      - target: ClipRelayShare
+    settings:
+      base:
+        PRODUCT_NAME: ClipRelay
+        PRODUCT_BUNDLE_IDENTIFIER: cc.macseek.cliprelay
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: Config/App.plist
+        CODE_SIGN_ENTITLEMENTS: Config/Shared.entitlements
+        TARGETED_DEVICE_FAMILY: '1,2'
+    scheme: {}
+  ClipRelayKeyboard:
+    type: app-extension
+    platform: iOS
+    sources: [Keyboard, Shared, Resources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cc.macseek.cliprelay.keyboard
+        INFOPLIST_FILE: Config/Keyboard.plist
+        CODE_SIGN_ENTITLEMENTS: Config/Shared.entitlements
+        SKIP_INSTALL: YES
+  ClipRelayShare:
+    type: app-extension
+    platform: iOS
+    sources: [Share, Shared, Resources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cc.macseek.cliprelay.share
+        INFOPLIST_FILE: Config/Share.plist
+        CODE_SIGN_ENTITLEMENTS: Config/Shared.entitlements
+        SKIP_INSTALL: YES
