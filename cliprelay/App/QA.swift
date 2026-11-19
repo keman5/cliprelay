@@ -92,7 +92,8 @@ enum QA {
                 }
                 stage = "Mac automatic clipboard sync"
                 let automaticFile = Data("Copied file contents".utf8)
-                let automaticImage = lanFixtures(origin: "Mac")[1].bytes
+                // Use a different image so the copy is a new history entry.
+                let automaticImage = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgiPr/HwAEEAJZs1E1mQAAAABJRU5ErkJggg==")!
                 #if os(macOS)
                 try await sendClipboardFixtures(file: automaticFile, image: automaticImage, from: ex, in: dir)
                 #else
@@ -252,6 +253,14 @@ enum QA {
         let offered = try await disabled.pairingMessage("invite", service: hub.me.peer.service, at: lanAddress)
         print("QA received invitation")
         let lanInvite = try PairingCard.parse(offered)
+        let pin = lanCard.shortCode
+        let wrongPin = pin == "000000" ? "000001" : "000000"
+        let found = try await sender.findPairing(pin, address: "127.0.0.1:48233")
+        guard PairingCard.isShortCode(pin), found.challenge == lanInvite.challenge,
+              (try? await sender.findPairing(wrongPin, address: "127.0.0.1:48233")) == nil,
+              !PairingCard.isShortCode("12345"), !PairingCard.isShortCode("１２３４５６") else {
+            throw RelayFailure.invalid
+        }
         let lanRequest = try PairingRequest(from: disabled.me, card: lanInvite)
         let lanCode = try lanRequest.code()
         // The sender has no browser, as on a network that blocks Bonjour.

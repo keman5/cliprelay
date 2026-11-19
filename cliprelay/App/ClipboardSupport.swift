@@ -79,7 +79,15 @@ struct HistoryItemLabel: View {
                 .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(row.name).lineLimit(2)
+                HStack(spacing: 4) {
+                    if row.pinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(Text("Pinned"))
+                    }
+                    Text(row.name).lineLimit(2)
+                }
                 Text(details).font(.caption).foregroundStyle(.secondary)
             }
         }

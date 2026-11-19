@@ -12,11 +12,25 @@ case "${1:-}" in
     ;;
 esac
 command -v go >/dev/null && go clean -cache
+if [[ "${1:-}" == --keyboard-setup-qa ]]; then
+  qa_dir=$(mktemp -d)
+  trap 'rm -rf "$qa_dir"' EXIT
+  swiftc Shared/KeyboardSetupCheck.swift scripts/keyboard-setup-qa.swift -o "$qa_dir/check"
+  "$qa_dir/check"
+  exit
+fi
 build_root="${CLIPRELAY_BUILD_ROOT:-$HOME/Library/Caches/ClipRelayBuild}"
 if [[ -z "$device" && "${1:-}" != --mac-view-qa ]]; then
   sim="${CLIPRELAY_SIM:-$(xcrun simctl list devices available -j | node -e 'let s="";process.stdin.on("data",v=>s+=v).on("end",()=>console.log(Object.values(JSON.parse(s).devices).flat().find(d=>d.name==="ClipRelay-QA")?.udid||""))')}"
   if [[ -z "$sim" ]]; then
-    sim=$(xcrun simctl create ClipRelay-QA com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro com.apple.CoreSimulator.SimRuntime.iOS-26-5)
+    runtime=$(xcrun simctl list runtimes -j | node -e '
+      const { runtimes } = JSON.parse(require("fs").readFileSync(0,"utf8"));
+      const runtime = runtimes.filter(r => r.isAvailable && r.identifier.startsWith("com.apple.CoreSimulator.SimRuntime.iOS-"))
+        .sort((a,b) => b.version.localeCompare(a.version,"en",{numeric:true}))[0];
+      if (!runtime) process.exit(1);
+      console.log(runtime.identifier);
+    ')
+    sim=$(xcrun simctl create ClipRelay-QA com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro "$runtime")
   fi
   if ! xcrun simctl list devices booted | grep -F "$sim" >/dev/null; then xcrun simctl boot "$sim"; fi
 fi
@@ -37,6 +51,13 @@ build_target() {
     CURRENT_PROJECT_VERSION="$build_number" "$@" build
 }
 
+if [[ "${1:-}" == --history-ui-qa ]]; then
+  xcodebuild -quiet -project ClipRelay.xcodeproj -scheme ClipRelayPhone -configuration Debug \
+    -destination "id=$sim" -derivedDataPath "$build_root/ios" \
+    SYMROOT="$build_root/ios/Build/Products" OBJROOT="$build_root/ios/Build/Intermediates.noindex" \
+    CURRENT_PROJECT_VERSION="$build_number" -parallel-testing-enabled NO test
+  exit
+fi
 build_target mac ClipRelayMac 'platform=macOS' CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Development'
 app="$build_root/mac/Build/Products/Debug/ClipRelay.app"
 codesign --verify --deep --strict "$app"

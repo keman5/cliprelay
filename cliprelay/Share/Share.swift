@@ -4,7 +4,7 @@ final class Share: UIViewController {
     private let status = UILabel()
     private let save = UIButton(type: .system)
     private let send = UIButton(type: .system)
-    private var records: [(clip: Clip, source: String, pinned: Bool)] = []
+    private var records: [Clip] = []
     private var library: Library?
 
     override func viewDidLoad() {
@@ -52,11 +52,11 @@ final class Share: UIViewController {
                 let clip = try await ClipboardPaste.load(provider)
                 total += clip.bytes.count + (clip.plain?.utf8.count ?? 0)
                 guard total <= Clip.limit else { throw RelayFailure.tooLarge }
-                records.append((clip, "Share", false))
+                records.append(clip)
             }
             self.library = library
             status.text = records.prefix(5).map { item in
-                [item.clip.name, localized(item.clip.kind), ByteCountFormatter.string(fromByteCount: Int64(item.clip.bytes.count), countStyle: .file)]
+                [item.name, localized(item.kind), ByteCountFormatter.string(fromByteCount: Int64(item.bytes.count), countStyle: .file)]
                     .joined(separator: " · ")
             }.joined(separator: "\n")
             let canSend = try !library.peers().isEmpty
@@ -68,13 +68,13 @@ final class Share: UIViewController {
     private func commit(send shouldSend: Bool) {
         guard let library else { return }
         do {
-            _ = try library.importArchive(records, sendToPeers: shouldSend)
+            if shouldSend, try library.peers().isEmpty { throw RelayFailure.unauthorized }
+            let ids = try library.saveCopies(records, source: "Share", sendToPeers: shouldSend)
             guard shouldSend else {
                 extensionContext?.completeRequest(returningItems: nil)
                 return
             }
             view.isUserInteractionEnabled = false
-            let ids = Set(records.map { $0.clip.id.uuidString })
             Task { @MainActor in
                 await ExtensionDelivery.attempt(library, ids: ids)
                 extensionContext?.completeRequest(returningItems: nil)

@@ -94,6 +94,15 @@ struct PairingCard: Codable {
         self.addresses = addresses.isEmpty ? nil : Array(addresses.prefix(3))
     }
     func code() throws -> String { try PairingCode.encode(self, prefix: "CLIP2.") }
+    // The short code selects an invitation. Trust still requires fingerprint confirmation.
+    var shortCode: String {
+        let digest = SHA256.hash(data: Data((challenge.uuidString + device).utf8))
+        let value = digest.prefix(4).reduce(UInt32.zero) { ($0 << 8) | UInt32($1) }
+        return String(format: "%06d", Int(value % 1_000_000))
+    }
+    static func isShortCode(_ code: String) -> Bool {
+        code.utf8.count == 6 && code.utf8.allSatisfy { (48...57).contains($0) }
+    }
     static func parse(_ code: String, now: Date = .now) throws -> Self {
         let card = try PairingCode.decode(Self.self, code, prefix: "CLIP2.")
         try card.validate(now: now)

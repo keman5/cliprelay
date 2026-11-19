@@ -31,6 +31,7 @@ final class Keyboard: UIInputViewController {
     private var query="", page=0, filter="", candidatePage=0
     private var hint=""
     private var library: Library?
+    private var lastSetupResponse: String?
     private lazy var dictionary: [String:String] = {
         guard let url=Bundle.main.url(forResource:"pinyin",withExtension:"json"),let data=try? Data(contentsOf:url) else {return [:]}
         return (try? JSONDecoder().decode([String:String].self,from:data)) ?? [:]
@@ -53,6 +54,8 @@ final class Keyboard: UIInputViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         clips = ClipRelayPreferences.keyboardStartsWithClipboard
+        chinese = ClipRelayPreferences.defaults.string(forKey: "keyboard.inputLanguage") == "pinyin"
+        numbers = false; shifted = false; symbols = false
         page = 0
         draft = nil; splitText = nil; expanded = nil; listOffset = .zero
         hint = ""
@@ -75,7 +78,27 @@ final class Keyboard: UIInputViewController {
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        captureClipboard()
+        if !answerSetupCheck() { captureClipboard() }
+    }
+
+    override func textDidChange(_ textInput: UITextInput?) {
+        super.textDidChange(textInput)
+        answerSetupCheck()
+    }
+
+    @discardableResult
+    private func answerSetupCheck() -> Bool {
+        guard let challenge = KeyboardSetupCheck.activeChallenge,
+              let context = textDocumentProxy.documentContextBeforeInput,
+              textDocumentProxy.documentContextAfterInput?.isEmpty != false else { return false }
+        if KeyboardSetupCheck.result(from: context, for: challenge) != nil { return true }
+        guard context == challenge else { return false }
+        guard lastSetupResponse != challenge else { return true }
+        lastSetupResponse = challenge
+        // The probe is a field in ClipRelay seeded with the current App Group challenge.
+        let response = KeyboardSetupCheck.response(to: challenge, fullAccess: hasFullAccess)
+        textDocumentProxy.insertText(String(response.dropFirst(challenge.count)))
+        return true
     }
 
     private func captureClipboard() {
@@ -105,8 +128,8 @@ final class Keyboard: UIInputViewController {
         do {
             let clip = Clip.text(text)
             let send = ClipRelayPreferences.keyboardSendsClipboard
-            try library.save(clip, source: "Keyboard", sendToPeers: send)
-            if send { Task { await ExtensionDelivery.attempt(library, ids: [clip.id.uuidString]) } }
+            let ids = try library.saveCopies([clip], source: "Keyboard", sendToPeers: send)
+            if send { Task { await ExtensionDelivery.attempt(library, ids: ids) } }
             page = 0
         } catch {
             hint = error.localizedDescription
@@ -409,9 +432,14 @@ final class Keyboard: UIInputViewController {
                 guard let body = try? k.library?.clip(record.id).text else { return }
                 k.startDraft(SavedPhrase(text: body), editing: false)
             }
+            let pinTitle = record.pinned ? "Unpin" : "Pin"
+            let pinSymbol = record.pinned ? "pin.slash" : "pin"
+            let pinAction: (Keyboard) -> Void = { k in
+                k.change { try k.library?.pin(record.id); k.page = 0; k.listOffset = .zero }
+            }
             let wrapper = swipeCard(card, first: ("Add phrase","text.badge.plus",addPhrase),
-                pin: (record.pinned ? "Unpin" : "Pin", record.pinned ? "pin.slash" : "pin"), canAdd: ["Text","Rich text"].contains(record.kind),
-                pinAction: { k in k.change { try k.library?.pin(record.id); k.page = 0; k.listOffset = .zero } },
+                pin: (pinTitle, pinSymbol), canAdd: ["Text","Rich text"].contains(record.kind),
+                pinAction: pinAction,
                 delete: { k in k.change { try k.library?.delete(record.id) } })
             if expanded == record.id {
                 let add = action("Phrases", "plus") { k in
@@ -421,7 +449,7 @@ final class Keyboard: UIInputViewController {
                 let words = action("Split words", "character.textbox") { k in k.splitText = text; k.render() }
                 add.isEnabled = text != nil; words.isEnabled = text != nil
                 let remove = action("Delete", "trash") { [weak wrapper] _ in wrapper?.askDelete() }
-                addActions([add, words, remove], to: card)
+                addActions([add, words, action(pinTitle, pinSymbol, pinAction), remove], to: card)
             }
             lines.addArrangedSubview(wrapper)
         }
@@ -617,7 +645,16 @@ final class Keyboard: UIInputViewController {
         }
     }
     private func select(_ r:Summary) {
-        guard let clip=try? library?.clip(r.id) else{return}
+        guard let library else { return }
+        let clip: Clip
+        do {
+            clip = try library.clip(r.id)
+            try library.markRecent(r.id)
+        } catch {
+            hint = error.localizedDescription
+            render()
+            return
+        }
         if clip.kind=="Text",let text=clip.text {textDocumentProxy.insertText(text);return}
         guard hasFullAccess else {hint=localize("Full access required");render();return}
         var representations:[String:Any]=[clip.type:clip.bytes]

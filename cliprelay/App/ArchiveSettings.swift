@@ -13,6 +13,7 @@ struct ArchiveSettings: View {
     var body: some View {
         Section("Backup") {
             SecureField("Archive password", text: $password)
+                .modifier(SettingsInputFocus())
             Button("Create encrypted backup", action: export).disabled(working || password.isEmpty)
             Button("Import encrypted backup") { picking = true }.disabled(working || password.isEmpty)
             if let exportURL {

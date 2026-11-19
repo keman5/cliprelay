@@ -11,6 +11,7 @@ enum MacViewCheck {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         try checkClipboard(model, in: root)
+        try checkExclusions()
         let rect = NSRect(x: -4000, y: -4000, width: 640, height: 540)
         let window = NSWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: true)
         for tab in 0..<3 {
@@ -28,6 +29,23 @@ enum MacViewCheck {
             throw RelayFailure.invalid
         }
         print("PASS hidden Mac history, devices, settings and menu layout")
+    }
+
+    private static func checkExclusions() throws {
+        let defaults = ClipboardExclusions.ids(saved: nil, legacy: "org.example.notes, org.example.notes")
+        let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+        let withTextEdit = ClipboardExclusions.adding([textEdit, textEdit], to: defaults)
+        guard ClipboardExclusions.contains("com.apple.keychainaccess", in: defaults),
+              ClipboardExclusions.contains("com.lunabee.sg.onesafemac", in: defaults),
+              ClipboardExclusions.contains("com.agilebits.onepassword7", in: defaults),
+              withTextEdit.count == defaults.count + 1,
+              ClipboardExclusions.contains("com.apple.TextEdit", in: withTextEdit),
+              defaults.filter({ $0 == "org.example.notes" }).count == 1,
+              ClipboardExclusions.ids(saved: "", legacy: "org.example.notes").isEmpty,
+              ClipboardExclusions.ids(saved: "com.apple.passwords", legacy: nil) == ["com.apple.passwords"] else {
+            throw RelayFailure.invalid
+        }
+        print("PASS clipboard exclusion defaults, migration and removal")
     }
 
     @MainActor private static func checkClipboard(_ model: Model, in root: URL) throws {
@@ -74,6 +92,36 @@ enum MacViewCheck {
         guard pasteboard.writeObjects([privateItem]),
               (try? model.recordClipboardCopies(in: pasteboard, source: "QA", sendToPeers: true)) == nil,
               model.rows.count == 3 else { throw RelayFailure.invalid }
+
+        func captureText(_ value: String) throws {
+            pasteboard.clearContents()
+            guard pasteboard.setString(value, forType: .string) else { throw RelayFailure.invalid }
+            try model.recordClipboardCopies(in: pasteboard, source: "QA", sendToPeers: true)
+        }
+        try captureText("Keep one copy")
+        guard let original = model.rows.first else { throw RelayFailure.invalid }
+        try captureText("Newer copy")
+        try library.pin(original.id)
+        model.reload()
+        let movesWhenPinned = model.rows.first?.id == original.id && model.rows.first?.pinned == true
+        try captureText("Keep one copy")
+        let matches = model.rows.filter { $0.name == "Keep one copy" }
+        guard matches.map(\.id) == [original.id], matches.first?.pinned == true,
+              try Set(library.sharedSends(peer)) == Set(model.rows.map(\.id)) else {
+            print("FAIL copying identical content must reuse its pinned history entry and pending job")
+            throw RelayFailure.invalid
+        }
+        guard movesWhenPinned else {
+            print("FAIL pinned items must appear before newer unpinned items")
+            throw RelayFailure.invalid
+        }
+        try library.pin(original.id)
+        model.reload()
+        guard model.rows.first?.id == original.id, model.rows.first?.pinned == false else {
+            print("FAIL recopying must refresh the item's recency after unpinning")
+            throw RelayFailure.invalid
+        }
+        print("PASS duplicate clipboard copies, pin ordering and queued item identity")
     }
 }
 #endif

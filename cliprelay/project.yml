@@ -41,7 +41,18 @@ targets:
         INFOPLIST_FILE: Config/App.plist
         CODE_SIGN_ENTITLEMENTS: Config/Shared.entitlements
         TARGETED_DEVICE_FAMILY: '1,2'
-    scheme: {}
+    scheme:
+      testTargets: [ClipRelayHistoryUITests]
+  ClipRelayHistoryUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: ClipRelayPhone
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cc.macseek.cliprelay.history-uitests
+        TEST_TARGET_NAME: ClipRelayPhone
   ClipRelayKeyboard:
     type: app-extension
     platform: iOS

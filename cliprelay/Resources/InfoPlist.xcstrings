@@ -113,13 +113,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scan a device pairing card."
+            "value": "Scan a device pairing QR code."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "扫描设备配对卡。"
+            "value": "扫描设备配对二维码。"
           }
         },
         "zh-Hant": {

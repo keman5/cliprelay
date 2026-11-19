@@ -62,10 +62,10 @@ final class Library {
                 AND EXISTS(SELECT 1 FROM directory_settings JOIN peers ON owner=peers.id)
                 AND id NOT IN(SELECT id FROM peers);
             """, nil, nil, nil) == SQLITE_OK else { throw RelayFailure.storage }
-        if try query("PRAGMA user_version", [], { sqlite3_column_int($0, 0) }).first == 0 {
+        if try schemaVersion() < 2 {
             try run("BEGIN IMMEDIATE")
             do {
-                if try query("PRAGMA user_version", [], { sqlite3_column_int($0, 0) }).first == 0 {
+                if try schemaVersion() == 0 {
                     let old = try query("SELECT id FROM clips WHERE pinned=1 AND kind IN ('Text','Rich text') AND length(data)<65536 ORDER BY rowid DESC LIMIT 1000") { self.string($0,0) }
                     for id in old.reversed() {
                         if let text = try clip(id).text {
@@ -75,11 +75,25 @@ final class Library {
                     }
                     try run("PRAGMA user_version=1")
                 }
+                if try schemaVersion() == 1 {
+                    try run("ALTER TABLE clips ADD COLUMN content_key TEXT")
+                    let ids = try query("SELECT id FROM clips") { self.string($0, 0) }
+                    for id in ids {
+                        let key = try contentKey(clip(id))
+                        try run("UPDATE clips SET content_key=? WHERE id=?", [.text(key), .text(id)])
+                    }
+                    try run("CREATE INDEX clips_content_key ON clips(content_key)")
+                    try run("PRAGMA user_version=2")
+                }
                 try run("COMMIT")
             } catch { try? run("ROLLBACK"); throw error }
         }
     }
     deinit { sqlite3_close(db) }
+
+    private func schemaVersion() throws -> Int32 {
+        try query("PRAGMA user_version") { sqlite3_column_int($0, 0) }.first ?? 0
+    }
     func phraseCount() throws -> Int {
         try query("SELECT COUNT(*) FROM phrases") { Int(sqlite3_column_int($0,0)) }.first ?? 0
     }
@@ -145,42 +159,93 @@ final class Library {
         }).first else { throw RelayFailure.storage }
         return value
     }
-    func save(_ clip:Clip, source:String, sendToPeers:Bool = false) throws {
-        try clip.validate()
+    private func contentKey(_ clip: Clip) -> String {
+        // Plain text can arrive with different UTI spellings from the system pickers.
+        let type = clip.kind == "Text" ? "" : clip.type
+        return "\(clip.kind):\(type):\(Codec.hash(clip.bytes))"
+    }
+
+    private func insert(_ clip: Clip, source: String, pinned: Bool = false, key: String) throws {
+        try run("INSERT INTO clips(id,name,kind,source,pinned,data,content_key) VALUES(?,?,?,?,CAST(? AS INTEGER),?,?)",
+                [.text(clip.id.uuidString), .text(clip.name), .text(clip.kind), .text(source),
+                 .text(pinned ? "1" : "0"), .bytes(try Codec.pack(clip)), .text(key)])
+    }
+
+    // Incoming messages and archives retain their original IDs for retries and acknowledgements.
+    func save(_ clip: Clip, source: String, sendToPeers: Bool = false) throws {
         lock.lock(); defer {lock.unlock()}
         try run("BEGIN IMMEDIATE")
         do {
+            try clip.validate()
             let id = clip.id.uuidString
             if let previous = try query("SELECT data FROM clips WHERE id=?", [.text(id)], {self.blob($0,0)}).first {
                 let existing = try Codec.read(Clip.self, previous)
                 guard existing.bytes == clip.bytes, existing.type == clip.type, existing.plain == clip.plain,
                       existing.kind == clip.kind else { throw RelayFailure.invalid }
             } else {
-                try run("INSERT INTO clips(id,name,kind,source,data) VALUES(?,?,?,?,?)",[.text(id),.text(clip.name),.text(clip.kind),.text(source),.bytes(try Codec.pack(clip))])
+                try insert(clip, source: source, key: contentKey(clip))
             }
             if sendToPeers {
                 try run("INSERT OR IGNORE INTO share_send SELECT ?, id FROM effective_peers", [.text(id)])
             }
-            try run("DELETE FROM clips WHERE pinned=0 AND rowid NOT IN (SELECT rowid FROM clips ORDER BY rowid DESC LIMIT 1000) AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)")
-            var size = try usage().historyBytes
-            if size > 160_000_000 {
-                let removable = try query("""
-                    SELECT id,length(data) FROM clips WHERE pinned=0 AND id<>?
-                    AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)
-                    ORDER BY rowid
-                    """, [.text(id)]) { (self.string($0, 0), sqlite3_column_int64($0, 1)) }
-                for (old, bytes) in removable {
-                    try run("DELETE FROM clips WHERE id=?", [.text(old)])
-                    size -= bytes
-                    if size <= 150_000_000 { break }
-                }
-                guard size <= 160_000_000 else { throw RelayFailure.storage }
-            }
+            try prune(protecting: [id])
             try run("COMMIT")
         } catch {try? run("ROLLBACK"); throw error}
     }
-    func recordCount(kind: String) throws -> Int {
-        try query("SELECT COUNT(*) FROM clips WHERE ?='' OR kind=? OR (?='Pinned' AND pinned=1)", [.text(kind), .text(kind), .text(kind)]) {
+
+    @discardableResult
+    func saveCopies(_ clips: [Clip], source: String, sendToPeers: Bool = false) throws -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        try run("BEGIN IMMEDIATE")
+        do {
+            var saved: Set<String> = []
+            for clip in clips {
+                try clip.validate()
+                let key = contentKey(clip)
+                let previous = try query("SELECT id FROM clips WHERE content_key=? ORDER BY pinned DESC,rowid DESC LIMIT 1", [.text(key)]) {
+                    self.string($0, 0)
+                }.first
+                let id = previous ?? clip.id.uuidString
+                if previous != nil {
+                    try markRecent(id, source: source)
+                } else {
+                    try insert(clip, source: source, key: key)
+                }
+                if sendToPeers {
+                    try run("INSERT OR IGNORE INTO share_send SELECT ?, id FROM effective_peers", [.text(id)])
+                }
+                saved.insert(id)
+            }
+            try prune(protecting: saved)
+            try run("COMMIT")
+            return saved
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    func markRecent(_ id: String, source: String = "") throws {
+        try run("UPDATE clips SET rowid=(SELECT MAX(rowid)+1 FROM clips),source=COALESCE(NULLIF(?,''),source) WHERE id=?",
+                [.text(source), .text(id)])
+    }
+
+    private func prune(protecting saved: Set<String>) throws {
+        try run("DELETE FROM clips WHERE pinned=0 AND rowid NOT IN (SELECT rowid FROM clips ORDER BY rowid DESC LIMIT 1000) AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)")
+        var size = try usage().historyBytes
+        guard size > 160_000_000 else { return }
+        let removable = try query("""
+            SELECT id,length(data) FROM clips WHERE pinned=0
+            AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)
+            ORDER BY rowid
+            """) { (self.string($0, 0), sqlite3_column_int64($0, 1)) }
+        for (id, bytes) in removable where !saved.contains(id) {
+            try run("DELETE FROM clips WHERE id=?", [.text(id)])
+            size -= bytes
+            if size <= 150_000_000 { break }
+        }
+        guard size <= 160_000_000 else { throw RelayFailure.storage }
+    }
+
+    func recordCount(kind: String, search: String = "") throws -> Int {
+        try query("SELECT COUNT(*) FROM clips WHERE (?='' OR kind=? OR (?='Pinned' AND pinned=1)) AND instr(lower(name),lower(?))>0", [.text(kind), .text(kind), .text(kind), .text(search)]) {
             Int(sqlite3_column_int64($0, 0))
         }.first ?? 0
     }
@@ -225,7 +290,6 @@ final class Library {
             for (clip, source, pinned) in records {
                 try clip.validate()
                 let id = clip.id.uuidString
-                let data = try Codec.pack(clip)
                 if let previous = try query("SELECT data FROM clips WHERE id=?", [.text(id)], { self.blob($0, 0) }).first {
                     let existing = try Codec.read(Clip.self, previous)
                     guard existing.bytes == clip.bytes, existing.type == clip.type, existing.plain == clip.plain,
@@ -234,8 +298,7 @@ final class Library {
                     }
                     continue
                 }
-                try run("INSERT INTO clips(id,name,kind,source,pinned,data) VALUES(?,?,?,?,CAST(? AS INTEGER),?)",
-                        [.text(id), .text(clip.name), .text(clip.kind), .text(source), .text(pinned ? "1" : "0"), .bytes(data)])
+                try insert(clip, source: source, pinned: pinned, key: contentKey(clip))
                 if sendToPeers { try run("INSERT INTO share_send SELECT ?, id FROM effective_peers", [.text(id)]) }
                 added += 1
             }

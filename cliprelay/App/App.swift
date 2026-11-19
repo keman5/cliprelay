@@ -18,11 +18,13 @@ import VisionKit
     @Published var filter = ""
     @Published var search = ""
     @Published var page = 0
+    @Published private(set) var hasNextPage = false
     @Published var ready = false
     @Published var busy = false
     var transfer:Exchange?
     var library:Library? {transfer?.library}
     #if os(macOS)
+    @Published private(set) var menuRows: [Summary] = []
     private var captureTimer: Timer?
     private var changeCount = NSPasteboard.general.changeCount
     private var nextAutomaticSync = Date.distantPast
@@ -30,6 +32,16 @@ import VisionKit
     init() {
         #if DEBUG
         if QA.active {return}
+        #if targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--history-ui-qa") {
+            do {
+                let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                transfer = Exchange(try Library(root), try Identity(secret: Data(repeating: 42, count: 32), name: "QA"))
+                reload()
+            } catch { notice = error.localizedDescription }
+            return
+        }
+        #endif
         #endif
         do {
             #if os(macOS)
@@ -39,7 +51,12 @@ import VisionKit
             #endif
             let x=Exchange(try Library(Library.directory()),try Identity.load(name:name));transfer=x
             x.didReceive = { [weak self] in Task { @MainActor in self?.reload() } }
+            #if os(iOS)
+            reload()
+            if !peers.isEmpty { startNetworking() }
+            #else
             try x.start();ready=true;reload()
+            #endif
             #if os(macOS)
             let timer = Timer(timeInterval: 0.7, repeats: true) { [weak self] timer in
                 MainActor.assumeIsolated {
@@ -53,9 +70,46 @@ import VisionKit
             #endif
         } catch {notice=error.localizedDescription}
     }
-    func reload() {do { rows=try library?.page(kind:filter,search:search,offset:page*30) ?? [];peers=try library?.peers() ?? [] } catch {notice=error.localizedDescription}}
+    func reload() {
+        guard let library else { return }
+        do {
+            let count = try library.recordCount(kind: filter, search: search)
+            let lastPage = max(0, count - 1) / 30
+            if page > lastPage { page = lastPage }
+            rows = try library.page(kind: filter, search: search, offset: page * 30, pinnedFirst: true)
+            hasNextPage = page < lastPage
+            peers = try library.peers()
+            #if os(macOS)
+            menuRows = Array(try library.page(pinnedFirst: true).prefix(10))
+            #endif
+        } catch { notice = error.localizedDescription }
+    }
+    #if os(iOS)
+    func startNetworking() {
+        guard !ready, let transfer else { return }
+        do { try transfer.start(); ready = true }
+        catch { notice = error.localizedDescription }
+    }
+    #endif
     func operation(_ body:()throws->Void) {do{try body();notice="";reload()}catch{notice=error.localizedDescription}}
-    func save(_ clip:Clip)throws {guard let library else{throw RelayFailure.storage};try library.save(clip,source:"Local")}
+    func save(_ clips: [Clip]) throws {
+        guard let library else { throw RelayFailure.storage }
+        try library.saveCopies(clips, source: "Local")
+        page = 0
+    }
+
+    func storedClip(_ id: String) throws -> Clip {
+        guard let library else { throw RelayFailure.storage }
+        return try library.clip(id)
+    }
+
+    func copy(_ row: Summary) {
+        operation {
+            try systemCopy(storedClip(row.id))
+            try library?.markRecent(row.id)
+        }
+        if notice.isEmpty { notice = ClipRelayPreferences.localized("Copied") }
+    }
     #if os(macOS)
     private func pollClipboard() {
         let clipboard = NSPasteboard.general
@@ -67,11 +121,7 @@ import VisionKit
               version != lastWrittenClipboard, !IsSecureEventInputEnabled() else { return }
         let source = NSWorkspace.shared.frontmostApplication
         if let bundle = source?.bundleIdentifier {
-            let excluded = (settings.string(forKey: "clipboard.excludedBundles") ?? "")
-                .split { $0.isWhitespace || $0 == "," }
-            guard !excluded.contains(Substring(bundle)),
-                  !bundle.hasPrefix("com.1password"), !bundle.hasPrefix("com.agilebits"),
-                  bundle != "com.apple.Passwords" else { return }
+            guard !ClipboardExclusions.excludes(bundle, settings: settings) else { return }
         }
         let sendToPeers = settings.object(forKey: "clipboard.sendAutomatically") as? Bool ?? true
         do {
@@ -90,7 +140,7 @@ import VisionKit
         var failure: Error?
         for clip in clips {
             do {
-                try library.save(clip, source: source, sendToPeers: sendToPeers)
+                try library.saveCopies([clip], source: source, sendToPeers: sendToPeers)
                 saved = true
             } catch { failure = error }
         }
@@ -121,19 +171,35 @@ import VisionKit
         await sync(cloud, clip: clip, quietly: quietly)
     }
     func sync(_ cloud:Cloud?, clip:Clip?=nil, quietly:Bool=false) async {
-        guard let transfer else{return}
+        guard let transfer else {
+            if !quietly { notice = RelayFailure.storage.localizedDescription }
+            return
+        }
         if let clip {
             do {guard !peers.isEmpty else{throw RelayFailure.unauthorized};try transfer.queue(clip)}
             catch {notice=error.localizedDescription;return}
         }
-        guard !busy else {return}
+        guard !busy else {
+            if clip != nil && !quietly {
+                notice = ClipRelayPreferences.localized("Pending")
+                #if os(macOS)
+                nextAutomaticSync = .distantPast
+                #endif
+            }
+            return
+        }
         busy=true;defer{busy=false;reload()}
         do {
-            try? await transfer.refreshDirectory()
+            if clip == nil { try? await transfer.refreshDirectory() }
             peers = try transfer.library.peers()
             var routes:[String]=[], failures:[String]=[], unavailable:[String]=[]
             var received = 0
             for peer in peers {
+                if let clip {
+                    do { routes += try await transfer.flush(to: peer, cloud: cloud, only: clip.id.uuidString) }
+                    catch { failures.append(peer.name) }
+                    continue
+                }
                 do {
                     for id in try transfer.library.sharedSends(peer) {
                         _ = try transfer.library.prepareSharedSend(id, from: transfer.me, to: peer)
@@ -153,14 +219,18 @@ import VisionKit
                     catch { if cloud == nil { unavailable.append(peer.name) } }
                 }
             }
-            received += try await cloud.mapAsync {try await transfer.pull($0)} ?? 0
+            if clip == nil { received += try await cloud.mapAsync {try await transfer.pull($0)} ?? 0 }
             if !quietly || !routes.isEmpty || received > 0 || !failures.isEmpty {
                 if !failures.isEmpty {
                     notice = ClipRelayPreferences.localized("Pending") + " · " + failures.joined(separator: ", ")
                 } else if !quietly && !unavailable.isEmpty && routes.isEmpty && received == 0 {
                     notice = ClipRelayPreferences.localized("Device or relay unavailable") + " · " + unavailable.joined(separator: ", ")
                 } else {
+                    #if os(iOS)
+                    if !quietly { notice = "" }
+                    #else
                     notice = "↑ \(routes.count)  ↓ \(received)  \(Set(routes).sorted().joined(separator:", "))"
+                    #endif
                 }
             }
         } catch {if !quietly {notice=error.localizedDescription}}
@@ -179,9 +249,11 @@ struct ClipRelayApp:App {
         #endif
     }
     var body:some Scene {
-        WindowGroup { Home(model:model) }
         #if os(macOS)
+        Window("ClipRelay", id: "history") { Home(model: model) }
         MenuBarExtra("ClipRelay",systemImage:"list.clipboard") { MenuContent(model:model) }
+        #else
+        WindowGroup { Home(model: model) }
         #endif
     }
 }
@@ -190,8 +262,11 @@ struct MenuContent:View {
     @ObservedObject var model:Model
     @Environment(\.openWindow) var openWindow
     var body:some View {
-        Button("Open ClipRelay"){NSApp.activate(ignoringOtherApps:true);NSApp.windows.first?.makeKeyAndOrderFront(nil)}
-        ForEach(model.rows.prefix(10)){row in Button(row.name){model.operation{if let c=try model.library?.clip(row.id){try systemCopy(c)}}}}
+        Button("Open ClipRelay") {
+            openWindow(id: "history")
+            NSApp.activate()
+        }
+        ForEach(model.menuRows) { row in Button(row.name) { model.copy(row) } }
         Divider();Button("Quit"){NSApp.terminate(nil)}
     }
 }
@@ -215,17 +290,35 @@ struct MenuContent:View {
 }
 #if os(macOS)
 @MainActor private var lastWrittenClipboard: Int?
-@MainActor func capturePasteboard() throws -> Clip {
-    guard let clip = try clipboardClips(in: .general).first else { throw RelayFailure.invalid }
-    return clip
-}
 #endif
+struct SettingsInputFocus: ViewModifier {
+    #if os(iOS)
+    @FocusState private var focused: Bool
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content
+            .focused($focused)
+            .submitLabel(.done)
+            .onSubmit { focused = false }
+        #else
+        content
+        #endif
+    }
+}
+
 struct Home:View {
+    #if os(iOS)
+    private enum HistoryField { case draft, search }
+    @FocusState private var historyField: HistoryField?
+    #endif
     @ObservedObject var model:Model
     @State private var language = ClipRelayPreferences.language
     @State private var theme = ClipRelayPreferences.theme
-    @State private var startsInClipboard = ClipRelayPreferences.keyboardStartsWithClipboard
     #if os(iOS)
+    @AppStorage("setupGuide.dismissed") private var guideDismissed = false
+    @State private var showingGuide = false
     @State private var keyboardCapture = ClipRelayPreferences.keyboardCapturesClipboard
     @State private var keyboardSend = ClipRelayPreferences.keyboardSendsClipboard
     #endif
@@ -235,12 +328,13 @@ struct Home:View {
     @AppStorage("relay.url", store: ClipRelayPreferences.defaults) private var address="https://cliprelay-test.macseek.cc"
     @AppStorage("relay.enabled", store: ClipRelayPreferences.defaults) private var enabled=false
     @State private var credential=""
+    @State private var confirmCredentialRemoval = false
     @State private var sharedFile: URL?
     @State private var preview: Clip?
+    @State private var pendingDeletion: Summary?
     #if os(macOS)
     @AppStorage("clipboard.captureAutomatically") private var automaticCapture = true
     @AppStorage("clipboard.sendAutomatically") private var automaticSend = true
-    @AppStorage("clipboard.excludedBundles") private var excludedBundles = ""
     #endif
     @Environment(\.scenePhase) private var phase
     init(model: Model, initialTab: Int = 0) {
@@ -250,44 +344,98 @@ struct Home:View {
     private func sync(_ clip:Clip?=nil) {
         Task { await model.syncConfigured(clip) }
     }
+
+    private func addDraft() {
+        guard !draft.isEmpty else { return }
+        model.operation {
+            try model.save([.text(draft)])
+            draft = ""
+            #if os(iOS)
+            historyField = nil
+            #endif
+        }
+    }
+
+    private func historyIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .frame(minWidth: 34, minHeight: 36)
+            .contentShape(Rectangle())
+    }
+
     var body:some View {
         TabView(selection:$tab) {
             VStack(alignment:.leading){
-                HStack{TextField("New text",text:$draft);Button{model.operation{try model.save(.text(draft));draft=""}}label:{Image(systemName:"plus")}.disabled(draft.isEmpty)}
-                HStack{TextField("Search",text:$model.search);Picker("Filter",selection:$model.filter){ForEach(["","Pinned","Text","Rich text","Image","File"],id:\.self){v in Text(LocalizedStringKey(v.isEmpty ? "All":v)).tag(v)}}}
+                HStack {
+                    TextField("New text", text: $draft)
+                        #if os(iOS)
+                        .focused($historyField, equals: .draft)
+                        .submitLabel(.done)
+                        #endif
+                        .onSubmit(addDraft)
+                    Button(action: addDraft) { historyIcon("plus") }
+                    .accessibilityLabel(Text("Add item"))
+                    .disabled(draft.isEmpty)
+                }
+                HStack {
+                    TextField("Search", text: $model.search)
+                        #if os(iOS)
+                        .focused($historyField, equals: .search)
+                        .submitLabel(.search)
+                        .onSubmit { historyField = nil }
+                        #endif
+                    Picker("Filter",selection:$model.filter){ForEach(["","Pinned","Text","Rich text","Image","File"],id:\.self){v in Text(LocalizedStringKey(v.isEmpty ? "All":v)).tag(v)}}
+                }
                 List(model.rows){row in
                     HStack{
                         HistoryItemLabel(row: row, library: model.library)
                         Spacer()
-                        Button{model.operation{if let c=try model.library?.clip(row.id){try systemCopy(c)}}}label:{Image(systemName:"doc.on.doc")}.accessibilityLabel(Text("Copy"))
+                        Button { model.copy(row) } label: { historyIcon("doc.on.doc") }
+                            .accessibilityLabel(Text("Copy"))
+                            .accessibilityIdentifier("history.copy.\(row.id)")
+                            .help("Copy")
+                        Button {
+                            model.operation { sync(try model.storedClip(row.id)) }
+                        } label: { historyIcon("paperplane") }
+                            .accessibilityLabel(Text("Send to devices"))
+                            .accessibilityIdentifier("history.send.\(row.id)")
+                            .help(model.peers.isEmpty ? Text("No paired devices") : Text("Send to devices"))
+                            .disabled(model.peers.isEmpty)
                         Menu {
-                            Button("Preview"){model.operation{preview=try model.library?.clip(row.id)}}
-                            Button("Send to devices"){model.operation{if let c=try model.library?.clip(row.id){sync(c)}}}
-                            Button("Share item"){model.operation{if let c=try model.library?.clip(row.id){sharedFile=try materialize(c)}}}
-                            Button("Pin / unpin"){model.operation{try model.library?.pin(row.id)}}
-                            Button("Delete",role:.destructive){model.operation{try model.library?.delete(row.id)}}
-                        } label:{Image(systemName:"ellipsis.circle")}.accessibilityLabel(Text("Item actions"))
+                            Button("Preview") { model.operation { preview = try model.storedClip(row.id) } }
+                            Button("Share item") { model.operation { sharedFile = try materialize(model.storedClip(row.id)) } }
+                            Button { model.operation { try model.library?.pin(row.id) } } label: {
+                                Label(LocalizedStringKey(row.pinned ? "Unpin" : "Pin"), systemImage: row.pinned ? "pin.slash" : "pin")
+                            }
+                            Button("Delete", role: .destructive) { pendingDeletion = row }
+                        } label: { historyIcon("ellipsis.circle") }
+                            .accessibilityLabel(Text("Item actions"))
+                            .accessibilityIdentifier("history.actions.\(row.id)")
+                            .help("Item actions")
                     }.buttonStyle(.borderless)
                 }
+                #if os(iOS)
+                .scrollDismissesKeyboard(.immediately)
+                #endif
                 HStack {
                     #if os(iOS)
                     PasteButton(supportedContentTypes: ClipboardPaste.types) { providers in
                         Task { @MainActor in
                             do {
-                                guard let provider = providers.first else {throw RelayFailure.invalid}
-                                let clip = try await ClipboardPaste.load(provider)
-                                model.operation { try model.save(clip) }
+                                guard !providers.isEmpty else { throw RelayFailure.invalid }
+                                var clips: [Clip] = []
+                                for provider in providers { clips.append(try await ClipboardPaste.load(provider)) }
+                                model.operation { try model.save(clips) }
                             } catch {model.notice=error.localizedDescription}
                         }
                     }.buttonBorderShape(.capsule)
                     #else
-                    Button("Paste"){model.operation{try model.save(capturePasteboard())}}
+                    Button("Paste") { model.operation { try model.save(clipboardClips(in: .general)) } }
                     #endif
                     Button("Import file"){importing=true}
                     Spacer()
                     Button("‹"){model.page-=1;model.reload()}.disabled(model.page==0).accessibilityLabel(Text("Previous page"))
                     Text("\(model.page+1)")
-                    Button("›"){model.page+=1;model.reload()}.disabled(model.rows.count<30).accessibilityLabel(Text("Next page"))
+                    Button("›"){model.page+=1;model.reload()}.disabled(!model.hasNextPage).accessibilityLabel(Text("Next page"))
                 }
             }.padding().tabItem{Label("History",systemImage:"list.clipboard")}.tag(0)
             Form {
@@ -296,7 +444,11 @@ struct Home:View {
                     Button("Sync now"){sync()}.disabled(model.busy)
                     #if os(macOS)
                     Button("Send current clipboard") {
-                        model.operation { sync(try capturePasteboard()) }
+                        model.operation {
+                            guard let library = model.library else { throw RelayFailure.storage }
+                            try library.saveCopies(clipboardClips(in: .general), source: "Local", sendToPeers: true)
+                            sync()
+                        }
                     }.disabled(model.peers.isEmpty)
                     Toggle("Automatically save clipboard items",isOn:$automaticCapture)
                     Toggle("Automatically sync clipboard items",isOn:$automaticSend).disabled(!automaticCapture)
@@ -306,7 +458,12 @@ struct Home:View {
                     }
                     #endif
                 }
-            }.formStyle(.grouped).tabItem{Label("Devices",systemImage:"laptopcomputer.and.iphone")}.tag(1)
+            }.formStyle(.grouped)
+            #if os(iOS)
+            .scrollDismissesKeyboard(.immediately)
+            .task(id: tab) { if tab == 1 { model.startNetworking() } }
+            #endif
+            .tabItem{Label("Devices",systemImage:"laptopcomputer.and.iphone")}.tag(1)
             Form {
                 Section("Appearance") {
                     Picker("Language", selection:$language) {
@@ -320,41 +477,60 @@ struct Home:View {
                         Text("Light").tag("light")
                         Text("Dark").tag("dark")
                     }
-                    #if os(iOS)
-                    Toggle("Open clipboard when keyboard appears", isOn:$startsInClipboard)
+                }
+                #if os(iOS)
+                Section("Keyboard preferences") {
+                    Button("Setup guide") { showingGuide = true }
+                    KeyboardStartupOptions()
                     Toggle("Save copied text when keyboard appears", isOn:$keyboardCapture)
                     Toggle("Send keyboard imports to paired devices", isOn:$keyboardSend)
                         .disabled(!keyboardCapture)
                     Text("Keyboard imports can contain sensitive text. Sending uses paired devices and the cloud relay if enabled.")
                         .font(.caption).foregroundStyle(.secondary)
-                    #endif
                 }
+                #endif
                 #if os(macOS)
                 Section("History") {
-                    TextField("Excluded app bundle IDs",text:$excludedBundles)
+                    ClipboardExclusionSettings(model: model)
                 }
                 #endif
                 Section("Cloud relay"){
                     Toggle("Enable cloud",isOn:$enabled)
                     TextField("HTTPS address",text:$address)
+                        .modifier(SettingsInputFocus())
                     SecureField("Relay credential",text:$credential)
+                        .modifier(SettingsInputFocus())
                     Button("Save relay credential"){
                         model.operation{_ = try Cloud(address,credential);try RelayCredential.save(credential,address:address);credential=""}
+                        if model.notice.isEmpty { model.notice = ClipRelayPreferences.localized("Saved") }
                     }.disabled(credential.isEmpty)
                     Button("Remove relay credential",role:.destructive){
-                        model.operation{try RelayCredential.remove();enabled=false;credential=""}
+                        confirmCredentialRemoval = true
+                    }
+                    .alert("Remove relay credential?", isPresented: $confirmCredentialRemoval) {
+                        Button("Cancel", role: .cancel) {}
+                        Button("Remove relay credential", role: .destructive) {
+                            model.operation { try RelayCredential.remove(); enabled = false; credential = "" }
+                        }
                     }
                 }
                 ArchiveSettings(model:model)
                 DiagnosticsSection(model:model)
-            }.formStyle(.grouped).tabItem{Label("Settings",systemImage:"gearshape")}.tag(2)
+            }.formStyle(.grouped)
+            #if os(iOS)
+            .scrollDismissesKeyboard(.immediately)
+            #endif
+            .tabItem{Label("Settings",systemImage:"gearshape")}.tag(2)
         }.safeAreaInset(edge:.bottom){if !model.notice.isEmpty {Text(model.notice).font(.caption).padding(5)}}
         .environment(\.locale, Locale(identifier:language == "system" ? ClipRelayPreferences.match(Locale.preferredLanguages) : language))
         .preferredColorScheme(theme == "light" ? .light : theme == "dark" ? .dark : nil)
         .onChange(of:language){_, value in ClipRelayPreferences.language=value}
         .onChange(of:theme){_, value in ClipRelayPreferences.theme=value}
-        .onChange(of:startsInClipboard){_, value in ClipRelayPreferences.keyboardStartsWithClipboard=value}
         #if os(iOS)
+        .onAppear { if !guideDismissed { showingGuide = true } }
+        .sheet(isPresented: $showingGuide, onDismiss: { guideDismissed = true }) {
+            SetupGuide(model: model, theme: $theme)
+        }
         .onChange(of:keyboardCapture){_, value in ClipRelayPreferences.keyboardCapturesClipboard=value}
         .onChange(of:keyboardSend){_, value in ClipRelayPreferences.keyboardSendsClipboard=value}
         #endif
@@ -383,7 +559,18 @@ struct Home:View {
                 }.padding(24)
             }
         }
-        .fileImporter(isPresented:$importing,allowedContentTypes:[.item]){result in model.operation{try model.save(fileClip(result.get()))}}
+        .alert("Delete clipboard item?", isPresented: Binding(
+            get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }
+        ), presenting: pendingDeletion) { row in
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            Button("Delete", role: .destructive) {
+                pendingDeletion = nil
+                model.operation { try model.library?.delete(row.id) }
+            }
+        } message: { row in
+            Text(row.name)
+        }
+        .fileImporter(isPresented:$importing,allowedContentTypes:[.item]){result in model.operation{try model.save([fileClip(result.get())])}}
         #if os(macOS)
         .frame(minWidth:520,minHeight:420)
         #endif
