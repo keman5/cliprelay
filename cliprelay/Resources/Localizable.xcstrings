@@ -1,6 +1,63 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Link": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "链接"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "鏈接"}}}},
+    "Code": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "代码"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "代碼"}}}},
+    "Document": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "文档"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "文檔"}}}},
+    "Archive": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "压缩包"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "压缩包"}}}},
+    "This Mac": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "本机"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "本机"}}}},
+    "Select an item to view its details": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "选择一条记录查看详情"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "選择一條記录查看详情"}}}},
+    "Clear search": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "清空搜索"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "清空搜索"}}}},
+    "Batch manage": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "批量管理"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "批量管理"}}}},
+    "Filter by type": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "类型筛选"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "类型篩選"}}}},
+    "Filter by source": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "来源筛选"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "來源篩選"}}}},
+    "Reset": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "重置"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "重置"}}}},
+    "No matching items": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "没有匹配的记录"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "没有匹配的記录"}}}},
+    "View details": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "查看详情"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "查看详情"}}}},
+    "Burn after paste": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "粘贴即焚"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "粘贴即焚"}}}},
+    "On this Mac · Not synced": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "仅本机 · 尚未同步"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "仅本机 · 尚未同步"}}}},
+    "Type or paste content and press Return…": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "输入 / 粘贴内容，回车添加到剪切板历史…"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "輸入 / 粘贴内容，回车添加到剪切板历史…"}}}},
+    "Add to clipboard history": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "添加到剪切板历史"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "添加到剪切板历史"}}}},
+    "Add from system clipboard": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "从系统剪贴板添加"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "從系统剪贴板添加"}}}},
+    "Source device": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "来源设备"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "來源設备"}}}},
+    "Time": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "时间"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "時间"}}}},
+    "Size": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "大小"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "大小"}}}},
+    "Expiration": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "过期设置"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "過期設置"}}}},
+    "Never": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "不过期"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "不過期"}}}},
+    "5 minutes": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "5 分钟"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "5 分鐘"}}}},
+    "24 hours": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "24 小时"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "24 小時"}}}},
+    "Turn off burn after paste": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "取消粘贴即焚"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "取消粘贴即焚"}}}},
+    "Remove from this Mac when copied from history": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "再次从历史复制时移除本机记录"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "再次從历史复制時移除本机記录"}}}},
+    "Export file": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "导出文件"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "导出文件"}}}},
+    "Masked": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已遮盖"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "已遮盖"}}}},
+    "Source application": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "来源应用"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "來源應用"}}}},
+    "Clear all filters": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "清除全部筛选"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "清除全部篩選"}}}},
+    "Select item": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "选中记录"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "選中記录"}}}},
+    "Click to copy": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "点击复制"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "点击复制"}}}},
+    "%lld items": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "%lld 条"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "%lld 條"}}}},
+    "%lld selected": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已选 %lld 条"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "已選 %lld 條"}}}},
+    "Confirm deletion of %lld items": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "确认删除 %lld 条"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "确认刪除 %lld 條"}}}},
+    "%lld characters": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "%lld 字符"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "%lld 字符"}}}},
+    "Clipboard workspace": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "剪切板"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "剪貼簿"}}}},
+    "Menu": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "菜单"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "選單"}}}},
+    "Manage": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "管理"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "管理"}}}},
+    "Devices & Pairing": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "设备与配对"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "裝置與配對"}}}},
+    "General": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "通用"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "一般"}}}},
+    "Privacy & Security": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "隐私与安全"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "隱私權與安全性"}}}},
+    "Storage": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "存储"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "儲存空間"}}}},
+    "About": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "关于"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "關於"}}}},
+    "Auto Sync": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "自动同步"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "自動同步"}}}},
+    "Connected · Local Network Bonjour": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已连接 · 局域网 Bonjour"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "已連線 · 區域網路 Bonjour"}}}},
+    "Offline · On This Mac": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已断开 · 仅存本机"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "未連線 · 僅存在此 Mac"}}}},
+    "HPKE end-to-end encryption": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "HPKE 端到端加密"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "HPKE 端對端加密"}}}},
+    "Connected · Local Network": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已连接 · 局域网"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "已連線 · 區域網路"}}}},
+    "Offline": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已断开"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "未連線"}}}},
+    "Search history…": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "搜索历史…"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "搜尋記錄…"}}}},
+    "No clipboard history": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "这里还没有内容"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "這裡還沒有內容"}}}},
+    "From %@": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "来自 %@"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "來自 %@"}}}},
+    "Menu shortcut is unavailable": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "菜单栏快捷键不可用"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "選單列快速鍵無法使用"}}}},
+    "Back": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "返回"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "返回"}}}},
+    "Close": {"extractionState": "manual", "localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "关闭"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "關閉"}}}},
     "Add item": {"localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "添加条目"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "新增項目"}}}},
     "Saved": {"localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "已保存"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "已儲存"}}}},
     "Remove paired device?": {"localizations": {"zh-Hans": {"stringUnit": {"state": "translated", "value": "解除与此设备的配对？"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "解除與此裝置的配對？"}}}},
@@ -7443,6 +7500,1974 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cancelar invitación"
+          }
+        }
+      }
+    },
+    "显示配对码" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show pairing code"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示配对码"
+          }
+        }
+      }
+    },
+    "输入配对码" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter pairing code"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入配对码"
+          }
+        }
+      }
+    },
+    "本机 · macOS" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac · macOS"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机 · macOS"
+          }
+        }
+      }
+    },
+    "本机" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机"
+          }
+        }
+      }
+    },
+    "已信任设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trusted device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已信任设备"
+          }
+        }
+      }
+    },
+    "已配对 · 在线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired · Online"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已配对 · 在线"
+          }
+        }
+      }
+    },
+    "已配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已配对"
+          }
+        }
+      }
+    },
+    "附近发现" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found nearby"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附近发现"
+          }
+        }
+      }
+    },
+    "未配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not paired"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未配对"
+          }
+        }
+      }
+    },
+    "配对时核对两边的设备指纹。备注仅保存在这台 Mac。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compare the fingerprints on both devices when pairing. Notes stay on this Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对时核对两边的设备指纹。备注仅保存在这台 Mac。"
+          }
+        }
+      }
+    },
+    "已配对 · 未在局域网发现" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired · Not found on local network"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已配对 · 未在局域网发现"
+          }
+        }
+      }
+    },
+    "附近发现 · 未配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found nearby · Not paired"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附近发现 · 未配对"
+          }
+        }
+      }
+    },
+    "核对指纹并配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compare fingerprints and pair"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "核对指纹并配对"
+          }
+        }
+      }
+    },
+    "也可以在另一台设备输入本机配对码，或扫描二维码。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You can also enter this Mac’s pairing code or scan its QR code on the other device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "也可以在另一台设备输入本机配对码，或扫描二维码。"
+          }
+        }
+      }
+    },
+    "此设备已离开局域网" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device is no longer on the local network"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备已离开局域网"
+          }
+        }
+      }
+    },
+    "设备配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Device pairing"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备配对"
+          }
+        }
+      }
+    },
+    "完成" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成"
+          }
+        }
+      }
+    },
+    "撤销设备信任？" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Revoke device trust?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销设备信任？"
+          }
+        }
+      }
+    },
+    "取消" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消"
+          }
+        }
+      }
+    },
+    "撤销信任" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Revoke trust"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "撤销信任"
+          }
+        }
+      }
+    },
+    "%@ 需要重新配对后才能同步。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ must pair again before syncing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 需要重新配对后才能同步。"
+          }
+        }
+      }
+    },
+    "备注：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备注：%@"
+          }
+        }
+      }
+    },
+    "状态" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Status"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "状态"
+          }
+        }
+      }
+    },
+    "配对时间" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired on"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对时间"
+          }
+        }
+      }
+    },
+    "设备指纹" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Device fingerprint"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备指纹"
+          }
+        }
+      }
+    },
+    "TCP 端口" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TCP port"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TCP 端口"
+          }
+        }
+      }
+    },
+    "发送测试条目" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send test item"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送测试条目"
+          }
+        }
+      }
+    },
+    "已复制设备指纹" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Device fingerprint copied"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制设备指纹"
+          }
+        }
+      }
+    },
+    "复制指纹" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Copy fingerprint"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制指纹"
+          }
+        }
+      }
+    },
+    "备注" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备注"
+          }
+        }
+      }
+    },
+    "例如：书房、爸妈用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "For example, home office or parents’ device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "例如：书房、爸妈用"
+          }
+        }
+      }
+    },
+    "保存" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存"
+          }
+        }
+      }
+    },
+    "备注已清空" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note cleared"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备注已清空"
+          }
+        }
+      }
+    },
+    "备注已保存" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note saved"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "备注已保存"
+          }
+        }
+      }
+    },
+    "测试条目等待同步" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test item queued"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试条目等待同步"
+          }
+        }
+      }
+    },
+    "已向 %@ 发送测试条目" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test item sent to %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已向 %@ 发送测试条目"
+          }
+        }
+      }
+    },
+    "剪贴板历史已锁定" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clipboard history is locked"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剪贴板历史已锁定"
+          }
+        }
+      }
+    },
+    "使用 Touch ID 解锁" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unlock with Touch ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Touch ID 解锁"
+          }
+        }
+      }
+    },
+    "解锁剪贴板历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unlock clipboard history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解锁剪贴板历史"
+          }
+        }
+      }
+    },
+    "通用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "General"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通用"
+          }
+        }
+      }
+    },
+    "同步" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同步"
+          }
+        }
+      }
+    },
+    "隐私与安全" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Privacy & Security"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐私与安全"
+          }
+        }
+      }
+    },
+    "存储" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Storage"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存储"
+          }
+        }
+      }
+    },
+    "启动、菜单栏与提示" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Startup, menu bar and alerts"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动、菜单栏与提示"
+          }
+        }
+      }
+    },
+    "局域网发现与同步方式" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local discovery and sync options"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "局域网发现与同步方式"
+          }
+        }
+      }
+    },
+    "打码与生物识别" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Masking and biometrics"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打码与生物识别"
+          }
+        }
+      }
+    },
+    "保留时长、缓存与数据" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retention, cache and data"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留时长、缓存与数据"
+          }
+        }
+      }
+    },
+    "开机时启动" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Launch at login"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开机时启动"
+          }
+        }
+      }
+    },
+    "登录后自动运行菜单栏应用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start the menu bar app when you log in"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "登录后自动运行菜单栏应用"
+          }
+        }
+      }
+    },
+    "菜单栏图标" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Menu bar icon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "菜单栏图标"
+          }
+        }
+      }
+    },
+    "在菜单栏常驻随贴图标" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show ClipRelay in the menu bar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在菜单栏常驻随贴图标"
+          }
+        }
+      }
+    },
+    "同步提示音" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync sound"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同步提示音"
+          }
+        }
+      }
+    },
+    "收到新剪贴板内容时播放提示音" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Play a sound when new clipboard items arrive"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收到新剪贴板内容时播放提示音"
+          }
+        }
+      }
+    },
+    "唤起快捷键" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Global shortcut"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "唤起快捷键"
+          }
+        }
+      }
+    },
+    "打开菜单栏弹窗" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open the menu bar popover"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开菜单栏弹窗"
+          }
+        }
+      }
+    },
+    "取消录制" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel recording"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消录制"
+          }
+        }
+      }
+    },
+    "录制新快捷键" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Record new shortcut"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录制新快捷键"
+          }
+        }
+      }
+    },
+    "语言" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Language"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语言"
+          }
+        }
+      }
+    },
+    "设置界面语言" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set the app language"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置界面语言"
+          }
+        }
+      }
+    },
+    "外观" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appearance"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "外观"
+          }
+        }
+      }
+    },
+    "选择浅色、深色或跟随系统" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose Light, Dark or System"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择浅色、深色或跟随系统"
+          }
+        }
+      }
+    },
+    "自动同步" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto sync"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动同步"
+          }
+        }
+      }
+    },
+    "将新复制的内容同步到已配对设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync new clipboard copies to paired devices"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将新复制的内容同步到已配对设备"
+          }
+        }
+      }
+    },
+    "局域网发现" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local network discovery"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "局域网发现"
+          }
+        }
+      }
+    },
+    "通过 Bonjour 发现同一 Wi-Fi 下的设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Find devices on the same Wi-Fi using Bonjour"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过 Bonjour 发现同一 Wi-Fi 下的设备"
+          }
+        }
+      }
+    },
+    "云端中继（测试）" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud relay (beta)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "云端中继（测试）"
+          }
+        }
+      }
+    },
+    "局域网不可达时转发加密内容" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Relay encrypted items when the local network is unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "局域网不可达时转发加密内容"
+          }
+        }
+      }
+    },
+    "中继地址" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Relay address"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中继地址"
+          }
+        }
+      }
+    },
+    "测试中…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Testing…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试中…"
+          }
+        }
+      }
+    },
+    "测试连接" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test connection"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "测试连接"
+          }
+        }
+      }
+    },
+    "中继凭证" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Relay credential"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中继凭证"
+          }
+        }
+      }
+    },
+    "凭证保存在钥匙串" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The credential is stored in Keychain"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "凭证保存在钥匙串"
+          }
+        }
+      }
+    },
+    "移除" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除"
+          }
+        }
+      }
+    },
+    "断线自动同步" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync after reconnecting"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "断线自动同步"
+          }
+        }
+      }
+    },
+    "连接恢复后重试待同步内容" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Retry queued items when the connection returns"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接恢复后重试待同步内容"
+          }
+        }
+      }
+    },
+    "手动同步" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Manual sync"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "手动同步"
+          }
+        }
+      }
+    },
+    "立即检查各已配对设备" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check paired devices now"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即检查各已配对设备"
+          }
+        }
+      }
+    },
+    "立即同步" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync now"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即同步"
+          }
+        }
+      }
+    },
+    "敏感内容自动打码" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mask sensitive content"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "敏感内容自动打码"
+          }
+        }
+      }
+    },
+    "列表遮蔽可识别的密码、验证码与访问令牌" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide recognized passwords, verification codes and access tokens in lists"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "列表遮蔽可识别的密码、验证码与访问令牌"
+          }
+        }
+      }
+    },
+    "验证码仅显示星号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mask verification codes"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "验证码仅显示星号"
+          }
+        }
+      }
+    },
+    "详情也遮蔽可识别的验证码" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide recognized verification codes in details too"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "详情也遮蔽可识别的验证码"
+          }
+        }
+      }
+    },
+    "生物识别解锁" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Biometric unlock"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生物识别解锁"
+          }
+        }
+      }
+    },
+    "使用 Touch ID 解锁剪贴板历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unlock clipboard history with Touch ID"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Touch ID 解锁剪贴板历史"
+          }
+        }
+      }
+    },
+    "自动记录剪贴板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatically record clipboard"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自动记录剪贴板"
+          }
+        }
+      }
+    },
+    "将这台 Mac 上新复制的内容加入历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add new copies on this Mac to history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将这台 Mac 上新复制的内容加入历史"
+          }
+        }
+      }
+    },
+    "设备间使用 HPKE 加密。开启测试中继时，中继仅转发加密数据。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Devices use HPKE encryption. The optional relay forwards encrypted data."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备间使用 HPKE 加密。开启测试中继时，中继仅转发加密数据。"
+          }
+        }
+      }
+    },
+    "历史保留时长" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "History retention"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "历史保留时长"
+          }
+        }
+      }
+    },
+    "24 小时" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "24 hours"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "24 小时"
+          }
+        }
+      }
+    },
+    "7 天" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "7 days"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "7 天"
+          }
+        }
+      }
+    },
+    "30 天" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 days"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 天"
+          }
+        }
+      }
+    },
+    "永久" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forever"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "永久"
+          }
+        }
+      }
+    },
+    "本地历史占用 · %@ / 160 MB" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local history · %@ / 160 MB"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地历史占用 · %@ / 160 MB"
+          }
+        }
+      }
+    },
+    "已清理读取缓存" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read cache cleared"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已清理读取缓存"
+          }
+        }
+      }
+    },
+    "清理缓存" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear cache"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清理缓存"
+          }
+        }
+      }
+    },
+    "导出全部历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export all history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出全部历史"
+          }
+        }
+      }
+    },
+    "清空全部历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear all history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清空全部历史"
+          }
+        }
+      }
+    },
+    "清空全部历史？" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear all history?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清空全部历史？"
+          }
+        }
+      }
+    },
+    "这会删除这台 Mac 的全部剪贴板历史和待发送条目，操作不可撤销。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This permanently removes all clipboard history and queued items from this Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这会删除这台 Mac 的全部剪贴板历史和待发送条目，操作不可撤销。"
+          }
+        }
+      }
+    },
+    "缩短历史保留时长？" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shorten history retention?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缩短历史保留时长？"
+          }
+        }
+      }
+    },
+    "应用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apply"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用"
+          }
+        }
+      }
+    },
+    "超过新期限的本机历史会自动删除，置顶条目会保留。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local items older than the new limit will be removed. Pinned items stay."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超过新期限的本机历史会自动删除，置顶条目会保留。"
+          }
+        }
+      }
+    },
+    "关闭剪贴板历史锁" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn off the clipboard history lock"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭剪贴板历史锁"
+          }
+        }
+      }
+    },
+    "Touch ID 不可用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Touch ID unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Touch ID 不可用"
+          }
+        }
+      }
+    },
+    "中继连接正常 · %lld 毫秒" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Relay available · %lld ms"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中继连接正常 · %lld 毫秒"
+          }
+        }
+      }
+    },
+    "已导出历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "History exported"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已导出历史"
+          }
+        }
+      }
+    },
+    "随贴 ClipRelay" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ClipRelay"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随贴 ClipRelay"
+          }
+        }
+      }
+    },
+    "版本 %@ · 局域网剪贴板历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version %@ · Local clipboard history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本 %@ · 局域网剪贴板历史"
+          }
+        }
+      }
+    },
+    "无需注册 · HPKE 端到端加密" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No account required · HPKE end-to-end encryption"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无需注册 · HPKE 端到端加密"
+          }
+        }
+      }
+    },
+    "正在检查…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Checking…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查…"
+          }
+        }
+      }
+    },
+    "检查更新" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check for updates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查更新"
+          }
+        }
+      }
+    },
+    "项目主页" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Project home"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "项目主页"
+          }
+        }
+      }
+    },
+    "它做什么" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "What it does"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "它做什么"
+          }
+        }
+      }
+    },
+    "让自己的设备共用剪贴板历史。支持文本、链接、代码、图片、文档、PDF 与压缩包。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Share clipboard history across your devices. Supports text, links, code, images, documents, PDFs and archives."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让自己的设备共用剪贴板历史。支持文本、链接、代码、图片、文档、PDF 与压缩包。"
+          }
+        }
+      }
+    },
+    "隐私" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Privacy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐私"
+          }
+        }
+      }
+    },
+    "设备之间使用 HPKE 加密。开启测试中继时，服务器只转发加密数据。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Devices use HPKE encryption. The optional server relay only forwards encrypted data."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备之间使用 HPKE 加密。开启测试中继时，服务器只转发加密数据。"
+          }
+        }
+      }
+    },
+    "版本" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本"
+          }
+        }
+      }
+    },
+    "上次检查更新" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Last update check"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上次检查更新"
+          }
+        }
+      }
+    },
+    "平台" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Platforms"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "平台"
+          }
+        }
+      }
+    },
+    "发现新版本 %@。请在项目主页查看。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version %@ is available. See the project home for details."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发现新版本 %@。请在项目主页查看。"
+          }
+        }
+      }
+    },
+    "已是最新版本" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "You’re up to date"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已是最新版本"
+          }
+        }
+      }
+    },
+    "Refresh pairing code" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Refresh pairing code"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新配对码"
+          }
+        }
+      }
+    },
+    "Pairing details" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pairing details"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对详情"
           }
         }
       }

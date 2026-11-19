@@ -7,6 +7,13 @@ struct Summary: Identifiable {
     let kind: String
     let source: String
     let pinned: Bool
+    var date: Date? = nil
+    var type: String? = nil
+    var burn = false
+    var expires: Date? = nil
+    var expirySeconds: Double? = nil
+    var localOnly = false
+    var received: Bool? = nil
 }
 
 struct SavedPhrase: Identifiable, Codable, Equatable {
@@ -47,6 +54,9 @@ final class Library {
         sqlite3_busy_timeout(db, 3000)
         guard sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS clips(id TEXT PRIMARY KEY, name TEXT, kind TEXT, source TEXT, pinned INTEGER DEFAULT 0, data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS peers(id TEXT PRIMARY KEY, card BLOB NOT NULL); CREATE TABLE IF NOT EXISTS pending(id TEXT,peer TEXT,wire BLOB NOT NULL,PRIMARY KEY(id,peer)); CREATE TABLE IF NOT EXISTS forward(id TEXT, origin TEXT, peer TEXT, wire BLOB NOT NULL, PRIMARY KEY(id,origin,peer));",nil,nil,nil)==SQLITE_OK else { throw RelayFailure.storage }
         try run("CREATE TABLE IF NOT EXISTS share_send(id TEXT, peer TEXT, PRIMARY KEY(id, peer))")
+        try run("CREATE TABLE IF NOT EXISTS pairing_dates(peer TEXT PRIMARY KEY, date REAL NOT NULL)")
+        try run("CREATE TRIGGER IF NOT EXISTS save_pairing_date AFTER INSERT ON peers BEGIN INSERT OR IGNORE INTO pairing_dates VALUES(NEW.id, unixepoch()); END")
+        try run("CREATE TRIGGER IF NOT EXISTS remove_pairing_date AFTER DELETE ON peers BEGIN DELETE FROM pairing_dates WHERE peer=OLD.id; END")
         try run("CREATE TABLE IF NOT EXISTS lan_addresses(peer TEXT PRIMARY KEY,address TEXT NOT NULL)")
         try run("CREATE TABLE IF NOT EXISTS phrases(id TEXT PRIMARY KEY, body TEXT NOT NULL, code TEXT NOT NULL, folder TEXT NOT NULL, rank INTEGER NOT NULL)")
         guard sqlite3_exec(db, """
@@ -62,13 +72,13 @@ final class Library {
                 AND EXISTS(SELECT 1 FROM directory_settings JOIN peers ON owner=peers.id)
                 AND id NOT IN(SELECT id FROM peers);
             """, nil, nil, nil) == SQLITE_OK else { throw RelayFailure.storage }
-        if try schemaVersion() < 2 {
+        if try schemaVersion() < 4 {
             try run("BEGIN IMMEDIATE")
             do {
                 if try schemaVersion() == 0 {
                     let old = try query("SELECT id FROM clips WHERE pinned=1 AND kind IN ('Text','Rich text') AND length(data)<65536 ORDER BY rowid DESC LIMIT 1000") { self.string($0,0) }
                     for id in old.reversed() {
-                        if let text = try clip(id).text {
+                        if let text = try readClip(id).text {
                             let p = SavedPhrase(text: text)
                             if (try? p.validate()) != nil, try phraseCount() < 1000 { try savePhrase(p) }
                         }
@@ -79,11 +89,31 @@ final class Library {
                     try run("ALTER TABLE clips ADD COLUMN content_key TEXT")
                     let ids = try query("SELECT id FROM clips") { self.string($0, 0) }
                     for id in ids {
-                        let key = try contentKey(clip(id))
+                        let key = try contentKey(readClip(id))
                         try run("UPDATE clips SET content_key=? WHERE id=?", [.text(key), .text(id)])
                     }
                     try run("CREATE INDEX clips_content_key ON clips(content_key)")
                     try run("PRAGMA user_version=2")
+                }
+                if try schemaVersion() == 2 {
+                    try run("ALTER TABLE clips ADD COLUMN captured REAL")
+                    try run("ALTER TABLE clips ADD COLUMN uti TEXT")
+                    try run("ALTER TABLE clips ADD COLUMN burn INTEGER NOT NULL DEFAULT 0")
+                    try run("ALTER TABLE clips ADD COLUMN expires REAL")
+                    try run("ALTER TABLE clips ADD COLUMN expiry_seconds REAL")
+                    try run("ALTER TABLE clips ADD COLUMN shared INTEGER NOT NULL DEFAULT 1")
+                    let ids = try query("SELECT id FROM clips") { self.string($0, 0) }
+                    for id in ids {
+                        let clip = try readClip(id)
+                        try run("UPDATE clips SET captured=CAST(? AS REAL), uti=? WHERE id=?",
+                                [.text(String(clip.date.timeIntervalSince1970)), .text(clip.type), .text(id)])
+                    }
+                    try run("CREATE INDEX clips_expires ON clips(expires) WHERE expires IS NOT NULL")
+                    try run("PRAGMA user_version=3")
+                }
+                if try schemaVersion() == 3 {
+                    try run("ALTER TABLE clips ADD COLUMN received INTEGER")
+                    try run("PRAGMA user_version=4")
                 }
                 try run("COMMIT")
             } catch { try? run("ROLLBACK"); throw error }
@@ -165,14 +195,15 @@ final class Library {
         return "\(clip.kind):\(type):\(Codec.hash(clip.bytes))"
     }
 
-    private func insert(_ clip: Clip, source: String, pinned: Bool = false, key: String) throws {
-        try run("INSERT INTO clips(id,name,kind,source,pinned,data,content_key) VALUES(?,?,?,?,CAST(? AS INTEGER),?,?)",
+    private func insert(_ clip: Clip, source: String, pinned: Bool = false, key: String, received: Bool? = false) throws {
+        try run("INSERT INTO clips(id,name,kind,source,pinned,data,content_key,captured,uti,shared,received) VALUES(?,?,?,?,CAST(? AS INTEGER),?,?,CAST(? AS REAL),?,CAST(? AS INTEGER),CAST(NULLIF(?,'') AS INTEGER))",
                 [.text(clip.id.uuidString), .text(clip.name), .text(clip.kind), .text(source),
-                 .text(pinned ? "1" : "0"), .bytes(try Codec.pack(clip)), .text(key)])
+                 .text(pinned ? "1" : "0"), .bytes(try Codec.pack(clip)), .text(key),
+                 .text(String(clip.date.timeIntervalSince1970)), .text(clip.type), .text(received == true ? "1" : "0"), .text(received.map { $0 ? "1" : "0" } ?? "")])
     }
 
     // Incoming messages and archives retain their original IDs for retries and acknowledgements.
-    func save(_ clip: Clip, source: String, sendToPeers: Bool = false) throws {
+    func save(_ clip: Clip, source: String, sendToPeers: Bool = false, received: Bool = false) throws {
         lock.lock(); defer {lock.unlock()}
         try run("BEGIN IMMEDIATE")
         do {
@@ -183,7 +214,7 @@ final class Library {
                 guard existing.bytes == clip.bytes, existing.type == clip.type, existing.plain == clip.plain,
                       existing.kind == clip.kind else { throw RelayFailure.invalid }
             } else {
-                try insert(clip, source: source, key: contentKey(clip))
+                try insert(clip, source: source, key: contentKey(clip), received: received)
             }
             if sendToPeers {
                 try run("INSERT OR IGNORE INTO share_send SELECT ?, id FROM effective_peers", [.text(id)])
@@ -202,7 +233,7 @@ final class Library {
             for clip in clips {
                 try clip.validate()
                 let key = contentKey(clip)
-                let previous = try query("SELECT id FROM clips WHERE content_key=? ORDER BY pinned DESC,rowid DESC LIMIT 1", [.text(key)]) {
+                let previous = try query("SELECT id FROM clips WHERE content_key=? AND (expires IS NULL OR expires > unixepoch()) ORDER BY pinned DESC,rowid DESC LIMIT 1", [.text(key)]) {
                     self.string($0, 0)
                 }.first
                 let id = previous ?? clip.id.uuidString
@@ -223,8 +254,8 @@ final class Library {
     }
 
     func markRecent(_ id: String, source: String = "") throws {
-        try run("UPDATE clips SET rowid=(SELECT MAX(rowid)+1 FROM clips),source=COALESCE(NULLIF(?,''),source) WHERE id=?",
-                [.text(source), .text(id)])
+        try run("UPDATE clips SET rowid=(SELECT MAX(rowid)+1 FROM clips),source=COALESCE(NULLIF(?,''),source),received=CASE WHEN ?='' THEN received ELSE 0 END WHERE id=?",
+                [.text(source), .text(source), .text(id)])
     }
 
     private func prune(protecting saved: Set<String>) throws {
@@ -245,12 +276,14 @@ final class Library {
     }
 
     func recordCount(kind: String, search: String = "") throws -> Int {
-        try query("SELECT COUNT(*) FROM clips WHERE (?='' OR kind=? OR (?='Pinned' AND pinned=1)) AND instr(lower(name),lower(?))>0", [.text(kind), .text(kind), .text(kind), .text(search)]) {
+        try purgeExpired()
+        return try query("SELECT COUNT(*) FROM clips WHERE (?='' OR kind=? OR (?='Pinned' AND pinned=1)) AND instr(lower(name),lower(?))>0", [.text(kind), .text(kind), .text(kind), .text(search)]) {
             Int(sqlite3_column_int64($0, 0))
         }.first ?? 0
     }
     func page(kind:String="",search:String="",offset:Int=0,pinnedFirst:Bool=false) throws -> [Summary] {
         lock.lock(); defer { lock.unlock() }
+        try purgeExpired()
         // SQLite's data_version tracks other connections, total_changes tracks this one.
         let external = try query("PRAGMA data_version") { sqlite3_column_int64($0, 0) }.first ?? 0
         let version = (Int64(sqlite3_total_changes(db)), external)
@@ -265,15 +298,46 @@ final class Library {
             return hit.rows
         }
         let order = pinnedFirst ? "pinned DESC, rowid DESC" : "rowid DESC"
-        let rows = try query("SELECT id,name,kind,source,pinned FROM clips WHERE (?='' OR kind=? OR (?='Pinned' AND pinned=1)) AND instr(lower(name),lower(?))>0 ORDER BY \(order) LIMIT 30 OFFSET CAST(? AS INTEGER)",[.text(kind),.text(kind),.text(kind),.text(search),.text(String(key.offset))]) { s in
-            Summary(id:self.string(s,0),name:self.string(s,1),kind:self.string(s,2),source:self.string(s,3),pinned:sqlite3_column_int(s,4) != 0)
+        let rows = try query("SELECT \(Self.summaryColumns) FROM clips WHERE (?='' OR kind=? OR (?='Pinned' AND pinned=1)) AND instr(lower(name),lower(?))>0 ORDER BY \(order) LIMIT 30 OFFSET CAST(? AS INTEGER)",[.text(kind),.text(kind),.text(kind),.text(search),.text(String(key.offset))]) { s in
+            self.summary(s)
         }
         if cachedPages.count == 4 { cachedPages.removeFirst() }
         cachedPages.append((key, rows))
         return rows
     }
+    private static let summaryColumns = "id,name,kind,source,pinned,captured,uti,burn,expires,shared,expiry_seconds,received"
+
+    private func summary(_ statement: OpaquePointer) -> Summary {
+        func date(_ column: Int32) -> Date? {
+            sqlite3_column_type(statement, column) == SQLITE_NULL
+                ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, column))
+        }
+        return Summary(id: string(statement, 0), name: string(statement, 1), kind: string(statement, 2),
+                       source: string(statement, 3), pinned: sqlite3_column_int(statement, 4) != 0,
+                       date: date(5), type: sqlite3_column_type(statement, 6) == SQLITE_NULL ? nil : string(statement, 6),
+                       burn: sqlite3_column_int(statement, 7) != 0, expires: date(8),
+                       expirySeconds: sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 10),
+                       localOnly: sqlite3_column_int(statement, 9) == 0,
+                       received: sqlite3_column_type(statement, 11) == SQLITE_NULL ? nil : sqlite3_column_int(statement, 11) != 0)
+    }
+
+    #if os(macOS)
+    func macHistory(search: String = "") throws -> [Summary] {
+        lock.lock(); defer { lock.unlock() }
+        try purgeExpired()
+        let rows = try query("SELECT \(Self.summaryColumns) FROM clips ORDER BY pinned DESC, rowid DESC", [], summary)
+        guard !search.isEmpty else { return rows }
+        return try rows.filter { row in
+            if row.name.localizedCaseInsensitiveContains(search) { return true }
+            guard row.kind == "Text" || row.kind == "Rich text" else { return false }
+            return try readClip(row.id).text?.localizedCaseInsensitiveContains(search) == true
+        }
+    }
+    #endif
+
     func archiveIDs() throws -> [(id: String, source: String, pinned: Bool)] {
-        try query("SELECT id, source, pinned FROM clips ORDER BY rowid") {
+        try purgeExpired()
+        return try query("SELECT id, source, pinned FROM clips ORDER BY rowid") {
             (self.string($0, 0), self.string($0, 1), sqlite3_column_int($0, 2) != 0)
         }
     }
@@ -298,7 +362,7 @@ final class Library {
                     }
                     continue
                 }
-                try insert(clip, source: source, pinned: pinned, key: contentKey(clip))
+                try insert(clip, source: source, pinned: pinned, key: contentKey(clip), received: nil)
                 if sendToPeers { try run("INSERT INTO share_send SELECT ?, id FROM effective_peers", [.text(id)]) }
                 added += 1
             }
@@ -334,20 +398,120 @@ final class Library {
             return false
         } catch { try? run("ROLLBACK"); throw error }
     }
-    func clip(_ id:String)throws->Clip {
+    private func readClip(_ id: String) throws -> Clip {
         guard let data = try query("SELECT data FROM clips WHERE id=?",[.text(id)],{self.blob($0,0)}).first else {throw RelayFailure.invalid}
         return try Codec.read(Clip.self,data)
     }
-    func pin(_ id:String)throws {try run("UPDATE clips SET pinned=1-pinned WHERE id=?",[.text(id)])}
-    func delete(_ id:String)throws {
-        lock.lock(); defer {lock.unlock()}
+    func clip(_ id: String) throws -> Clip {
+        let exists = try query("SELECT 1 FROM clips WHERE id=? AND (expires IS NULL OR expires > unixepoch())",
+                               [.text(id)]) { _ in true }.first ?? false
+        guard exists else { throw RelayFailure.invalid }
+        return try readClip(id)
+    }
+
+    func useClip(_ id: String, _ use: (Clip) throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
         try run("BEGIN IMMEDIATE")
         do {
-            try run("DELETE FROM clips WHERE id=?", [.text(id)])
-            try run("DELETE FROM share_send WHERE id=?", [.text(id)])
-            try run("DELETE FROM pending WHERE id=?", [.text(id)])
+            let clip = try self.clip(id)
+            let burn = try query("SELECT burn FROM clips WHERE id=?", [.text(id)]) {
+                sqlite3_column_int($0, 0) != 0
+            }.first ?? false
+            try use(clip)
+            if burn { try removeClip(id) } else { try markRecent(id) }
             try run("COMMIT")
         } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    func setBurn(_ id: String, _ enabled: Bool) throws {
+        try run("UPDATE clips SET burn=CAST(? AS INTEGER) WHERE id=?", [.text(enabled ? "1" : "0"), .text(id)])
+    }
+
+    func setExpiry(_ id: String, after seconds: TimeInterval?, now: Date = .now) throws {
+        let expiry = seconds.map { String(floor(now.timeIntervalSince1970 + $0)) } ?? ""
+        try run("UPDATE clips SET expires=CAST(NULLIF(?, '') AS REAL), expiry_seconds=CAST(NULLIF(?, '') AS REAL) WHERE id=?",
+                [.text(expiry), .text(seconds.map { String($0) } ?? ""), .text(id)])
+    }
+
+    @discardableResult func purgeExpired() throws -> Bool {
+        #if os(macOS)
+        let hours = UserDefaults.standard.integer(forKey: "mac.historyRetentionHours")
+        #else
+        let hours = 0
+        #endif
+        let now = Date.now.timeIntervalSince1970
+        let cutoff = now - Double(hours) * 3_600
+        let condition = "expires <= CAST(? AS REAL)" + (hours > 0 ? " OR (pinned=0 AND captured <= CAST(? AS REAL))" : "")
+        let args: [Value] = [.text(String(now))] + (hours > 0 ? [.text(String(cutoff))] : [])
+        lock.lock(); defer { lock.unlock() }
+        let ids = try query("SELECT id FROM clips WHERE " + condition, args) { self.string($0, 0) }
+        guard !ids.isEmpty else { return false }
+        try run("BEGIN IMMEDIATE")
+        do {
+            for id in ids {
+                let stillExpired = try query("SELECT 1 FROM clips WHERE id=? AND (" + condition + ")",
+                                             [.text(id)] + args) { _ in true }.first ?? false
+                if stillExpired { try removeClip(id) }
+            }
+            try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+        return true
+    }
+
+    #if os(macOS)
+    func clearHistory() throws {
+        lock.lock(); defer { lock.unlock() }
+        try run("BEGIN IMMEDIATE")
+        do {
+            try run("DELETE FROM share_send")
+            try run("DELETE FROM pending")
+            try run("DELETE FROM forward")
+            try run("DELETE FROM clips")
+            try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    func clearReadCache() {
+        lock.lock(); defer { lock.unlock() }
+        cachedPages.removeAll()
+    }
+
+    func pairingDate(_ peer: Peer) throws -> Date? {
+        try query("SELECT date FROM pairing_dates WHERE peer=?", [.text(peer.id)]) {
+            Date(timeIntervalSince1970: sqlite3_column_double($0, 0))
+        }.first
+    }
+    #endif
+
+    func pin(_ id: String) throws {
+        try run("UPDATE clips SET pinned=1-pinned WHERE id=?", [.text(id)])
+    }
+
+    func setPinned(_ ids: Set<String>) throws {
+        lock.lock(); defer { lock.unlock() }
+        try run("BEGIN IMMEDIATE")
+        do {
+            for id in ids { try run("UPDATE clips SET pinned=1 WHERE id=?", [.text(id)]) }
+            try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    func delete(_ id: String) throws { try deleteClips([id]) }
+
+    func deleteClips(_ ids: Set<String>) throws {
+        lock.lock(); defer { lock.unlock() }
+        try run("BEGIN IMMEDIATE")
+        do {
+            for id in ids { try removeClip(id) }
+            try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    private func removeClip(_ id: String) throws {
+        try run("DELETE FROM clips WHERE id=?", [.text(id)])
+        try run("DELETE FROM share_send WHERE id=?", [.text(id)])
+        try run("DELETE FROM pending WHERE id=?", [.text(id)])
+        try run("DELETE FROM forward WHERE id=?", [.text(id)])
     }
     func pair(_ peer: Peer, address: String? = nil) throws {
         let sql = "INSERT OR REPLACE INTO peers VALUES(?,?)"
@@ -455,7 +619,10 @@ final class Library {
     }
     func pending(_ id:String,peer:Peer)throws->Data? {try query("SELECT wire FROM pending WHERE id=? AND peer=?",[.text(id),.text(peer.id)]){self.blob($0,0)}.first}
     func pendingIDs(_ peer:Peer)throws->[String] {try query("SELECT id FROM pending WHERE peer=? ORDER BY rowid LIMIT 30",[.text(peer.id)]){self.string($0,0)}}
-    func delivered(_ id:String,peer:Peer)throws {try run("DELETE FROM pending WHERE id=? AND peer=?",[.text(id),.text(peer.id)])}
+    func delivered(_ id: String, peer: Peer) throws {
+        try run("UPDATE clips SET shared=1 WHERE id=?", [.text(id)])
+        try run("DELETE FROM pending WHERE id=? AND peer=?", [.text(id), .text(peer.id)])
+    }
     func stageForward(_ id: String, origin: String, peer: String, wire: Data) throws {
         lock.lock()
         defer { lock.unlock() }

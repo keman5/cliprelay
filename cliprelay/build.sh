@@ -2,7 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 device=
+mac_only=false
 case "${1:-}" in
+  --mac-only) mac_only=true ;;
   --device)
     if [[ $# != 2 || -z "$2" || "$2" == -* ]]; then
       echo "Usage: $0 --device <iPhone UDID>" >&2
@@ -20,7 +22,7 @@ if [[ "${1:-}" == --keyboard-setup-qa ]]; then
   exit
 fi
 build_root="${CLIPRELAY_BUILD_ROOT:-$HOME/Library/Caches/ClipRelayBuild}"
-if [[ -z "$device" && "${1:-}" != --mac-view-qa ]]; then
+if [[ "$mac_only" == false && -z "$device" && "${1:-}" != --mac-view-qa ]]; then
   sim="${CLIPRELAY_SIM:-$(xcrun simctl list devices available -j | node -e 'let s="";process.stdin.on("data",v=>s+=v).on("end",()=>console.log(Object.values(JSON.parse(s).devices).flat().find(d=>d.name==="ClipRelay-QA")?.udid||""))')}"
   if [[ -z "$sim" ]]; then
     runtime=$(xcrun simctl list runtimes -j | node -e '
@@ -64,7 +66,7 @@ codesign --verify --deep --strict "$app"
 if [[ "${1:-}" == --mac-view-qa ]]; then
   exec "$app/Contents/MacOS/ClipRelay" --view-qa
 fi
-if [[ -z "$device" ]]; then
+if [[ "$mac_only" == false && -z "$device" ]]; then
   build_target ios ClipRelayPhone "id=$sim"
 fi
 target=/Applications/ClipRelay.app
@@ -76,6 +78,7 @@ if [[ -d "$target" ]]; then mv "$target" "$stage/previous.app"; fi
 if ! mv "$stage/ClipRelay.app" "$target"; then [[ ! -d "$stage/previous.app" ]] || mv "$stage/previous.app" "$target"; exit 1; fi
 if [[ -d .artifacts ]]; then rm -rf .artifacts; fi
 echo "Installed ClipRelay $build_number on Mac"
+if [[ "$mac_only" == true ]]; then exit 0; fi
 if [[ -n "$device" ]]; then
   build_target ios ClipRelayPhone "id=$device" -allowProvisioningUpdates
   phone_app="$build_root/ios/Build/Products/Debug-iphoneos/ClipRelay.app"

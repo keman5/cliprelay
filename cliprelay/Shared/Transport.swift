@@ -54,11 +54,10 @@ final class Exchange {
             guard let self, case .ready = state, let port = listener?.port else { return }
             let inviting = self.invitation != nil
             DispatchQueue.main.async {
-                // Bonjour availability must not determine the lifetime of the TCP listener.
-                let service = NetService(domain: "local.", type: "_cliprelay._tcp.", name: self.me.peer.service, port: Int32(port.rawValue))
-                self.advertisement = service
-                self.setPairingTXT(inviting)
-                service.publish()
+                #if os(macOS)
+                guard UserDefaults.standard.object(forKey: "mac.lanDiscovery") as? Bool ?? true else { return }
+                #endif
+                self.publishLAN(port.rawValue, inviting: inviting)
             }
         }
         listener.newConnectionHandler = { [weak self] c in
@@ -76,38 +75,75 @@ final class Exchange {
             }
         }
         listener.start(queue:io); self.listener=listener
+        #if os(macOS)
+        if UserDefaults.standard.object(forKey: "mac.lanDiscovery") as? Bool ?? true { startBrowsing() }
+        #else
         startBrowsing()
+        #endif
     }
-    func startBrowsing() {
-        let browser=NWBrowser(for:.bonjourWithTXTRecord(type:"_cliprelay._tcp",domain:nil),using:.tcp)
-        browser.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .waiting(.dns(let code)), .failed(.dns(let code)):
-                self?.localNetworkDenied = code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
-            case .ready:
-                self?.localNetworkDenied = false
-            default: break
+
+    private func publishLAN(_ port: UInt16, inviting: Bool) {
+        guard advertisement == nil else { return }
+        let service = NetService(domain: "local.", type: "_cliprelay._tcp.", name: me.peer.service, port: Int32(port))
+        advertisement = service
+        setPairingTXT(inviting)
+        service.publish()
+    }
+
+    #if os(macOS)
+    func setLANDiscovery(_ enabled: Bool) {
+        if enabled {
+            startBrowsing()
+            if let listeningPort { publishLAN(listeningPort, inviting: io.sync { invitation != nil }) }
+        } else {
+            advertisement?.stop()
+            advertisement = nil
+            io.sync {
+                browser?.cancel()
+                browser = nil
+                endpoints.removeAll()
+                nearby.removeAll()
+                phoneInvitations.removeAll()
             }
         }
-        browser.browseResultsChangedHandler = { [weak self] results,_ in
-            var next:[String:NWEndpoint]=[:]
-            var nearby: [String:String] = [:]
-            var phones: Set<String> = []
-            for result in results {
-                if case .service(let name,_,_,_) = result.endpoint {
-                    next[name] = result.endpoint
-                    if name != self?.me.peer.service, case .bonjour(let txt) = result.metadata,
-                       let label = txt["pair"], !label.isEmpty {
-                        nearby[name] = label
-                        if txt["platform"] == "ios" { phones.insert(name) }
-                    }
+    }
+    #endif
+
+    func startBrowsing() {
+        io.sync {
+            guard browser == nil else { return }
+            let browser=NWBrowser(for:.bonjourWithTXTRecord(type:"_cliprelay._tcp",domain:nil),using:.tcp)
+            browser.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .waiting(.dns(let code)), .failed(.dns(let code)):
+                    self?.localNetworkDenied = code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
+                case .ready:
+                    self?.localNetworkDenied = false
+                default: break
                 }
             }
-            self?.endpoints=next
-            self?.nearby=nearby
-            self?.phoneInvitations = phones
+            browser.browseResultsChangedHandler = { [weak self, weak browser] results,_ in
+                guard let self, let browser, self.browser === browser else { return }
+                var next:[String:NWEndpoint]=[:]
+                var nearby: [String:String] = [:]
+                var phones: Set<String> = []
+                for result in results {
+                    if case .service(let name,_,_,_) = result.endpoint {
+                        next[name] = result.endpoint
+                        if name != self.me.peer.service, case .bonjour(let txt) = result.metadata,
+                           let label = txt["pair"], !label.isEmpty {
+                            nearby[name] = label
+                            if txt["platform"] == "ios" { phones.insert(name) }
+                        }
+                    }
+                }
+                self.endpoints=next
+                self.nearby=nearby
+                self.phoneInvitations = phones
+            }
+            self.browser = browser
+            browser.start(queue: io)
         }
-        browser.start(queue:io); self.browser=browser
     }
     deinit {advertisement?.stop();listener?.cancel();browser?.cancel()}
     func discovered() -> [String] {io.sync {Array(endpoints.keys)}}
@@ -148,8 +184,9 @@ final class Exchange {
         }
         return try PairingCard(me.peer, addresses: addresses)
     }
-    func offerPairing(_ card: PairingCard?) {
+    func offerPairing(_ card: PairingCard?, replacing challenge: UUID? = nil) {
         io.sync {
+            if let challenge, invitation?.challenge != challenge { return }
             invitation = card
             pairingRequest = nil
             pairingAttempts = 0
@@ -315,7 +352,7 @@ final class Exchange {
             let (body, origin) = try inner.open(me, peers: peers)
             let clip = try Codec.read(Clip.self, body)
             guard clip.id == forward.id else { throw RelayFailure.invalid }
-            try library.save(clip, source: origin.name)
+            try library.save(clip, source: origin.name, received: true)
             didReceive?()
             return try Envelope.seal(Data(clip.id.uuidString.utf8), from: me, to: hub, purpose: "relay-delivery-ack")
         }
@@ -350,7 +387,7 @@ final class Exchange {
     }
     private func save(_ data: Data, from peer: Peer) throws -> Clip {
         let clip=try Codec.read(Clip.self,data)
-        try library.save(clip,source:peer.name)
+        try library.save(clip,source:peer.name,received:true)
         didReceive?()
         return clip
     }
@@ -488,7 +525,7 @@ final class Exchange {
                       let (data, peer) = try? envelope.open(me,peers:peers),
                       let clip = try? Codec.read(Clip.self,data), uuid == clip.id,
                       (try? clip.validate()) != nil else { continue }
-                try library.save(clip,source:peer.name)
+                try library.save(clip,source:peer.name,received:true)
                 try await cloud.remove(me,id);count+=1;didReceive?()
             }
             cursor=page.cursor

@@ -50,7 +50,16 @@ import VisionKit
             let name=UIDevice.current.name
             #endif
             let x=Exchange(try Library(Library.directory()),try Identity.load(name:name));transfer=x
-            x.didReceive = { [weak self] in Task { @MainActor in self?.reload() } }
+            x.didReceive = { [weak self] in
+                Task { @MainActor in
+                    self?.reload()
+                    #if os(macOS)
+                    if UserDefaults.standard.bool(forKey: "mac.playSyncSound") {
+                        NSSound(named: NSSound.Name("Pop"))?.play()
+                    }
+                    #endif
+                }
+            }
             #if os(iOS)
             reload()
             if !peers.isEmpty { startNetworking() }
@@ -94,7 +103,13 @@ import VisionKit
     func operation(_ body:()throws->Void) {do{try body();notice="";reload()}catch{notice=error.localizedDescription}}
     func save(_ clips: [Clip]) throws {
         guard let library else { throw RelayFailure.storage }
+        #if os(macOS)
+        let send = UserDefaults.standard.object(forKey: "clipboard.sendAutomatically") as? Bool ?? true
+        try library.saveCopies(clips, source: "Local", sendToPeers: send)
+        if send { nextAutomaticSync = .distantPast }
+        #else
         try library.saveCopies(clips, source: "Local")
+        #endif
         page = 0
     }
 
@@ -105,8 +120,8 @@ import VisionKit
 
     func copy(_ row: Summary) {
         operation {
-            try systemCopy(storedClip(row.id))
-            try library?.markRecent(row.id)
+            guard let library else { throw RelayFailure.storage }
+            try library.useClip(row.id) { try systemCopy($0) }
         }
         if notice.isEmpty { notice = ClipRelayPreferences.localized("Copied") }
     }
@@ -152,7 +167,8 @@ import VisionKit
     }
 
     private func syncIfDue() {
-        guard !busy, !peers.isEmpty, nextAutomaticSync <= .now else { return }
+        guard UserDefaults.standard.object(forKey: "clipboard.flushOnReconnect") as? Bool ?? true,
+              !busy, !peers.isEmpty, nextAutomaticSync <= .now else { return }
         nextAutomaticSync = .now.addingTimeInterval(12)
         Task { await syncConfigured(quietly: true) }
     }
@@ -243,6 +259,9 @@ extension Optional {
 }
 struct ClipRelayApp:App {
     @StateObject private var model=Model()
+    #if os(macOS)
+    @StateObject private var menu = MacMenuController()
+    #endif
     init(){
         #if DEBUG && os(iOS)
         if QA.active {Task {await QA.run()}}
@@ -250,27 +269,14 @@ struct ClipRelayApp:App {
     }
     var body:some Scene {
         #if os(macOS)
-        Window("ClipRelay", id: "history") { Home(model: model) }
-        MenuBarExtra("ClipRelay",systemImage:"list.clipboard") { MenuContent(model:model) }
+        Window(ClipRelayPreferences.localized("ClipRelay"), id: "history") { MacWorkspaceWindow(model: model, menu: menu) }
+            .defaultSize(width: 980, height: 638)
+            .windowResizability(.contentMinSize)
         #else
         WindowGroup { Home(model: model) }
         #endif
     }
 }
-#if os(macOS)
-struct MenuContent:View {
-    @ObservedObject var model:Model
-    @Environment(\.openWindow) var openWindow
-    var body:some View {
-        Button("Open ClipRelay") {
-            openWindow(id: "history")
-            NSApp.activate()
-        }
-        ForEach(model.menuRows) { row in Button(row.name) { model.copy(row) } }
-        Divider();Button("Quit"){NSApp.terminate(nil)}
-    }
-}
-#endif
 @MainActor func systemCopy(_ clip:Clip)throws {
     #if os(macOS)
     let p=NSPasteboard.general

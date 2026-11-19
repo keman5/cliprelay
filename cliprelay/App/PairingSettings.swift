@@ -5,7 +5,7 @@ import UIKit
 import VisionKit
 #endif
 
-private struct PeerAddress: View {
+struct PeerAddress: View {
     @ObservedObject var model: Model
     let peer: Peer
     @State private var value = ""
@@ -46,6 +46,9 @@ struct PairingSettings: View {
     @ObservedObject var model: Model
     var guidingMacPairing = false
     var onPaired: ((Peer) -> Void)? = nil
+    var separateDeviceList = false
+    var showInvitation = false
+    var selectedNearbyService: String? = nil
     @Environment(\.openURL) private var openURL
     @AppStorage("relay.lanForwarding") private var forwarding = false
     @AppStorage("relay.publishDirectory") private var publishDirectory = false
@@ -70,10 +73,19 @@ struct PairingSettings: View {
             if !guidingMacPairing { invitationControls }
             recipientControls
             if !guidingMacPairing {
-                pairedDevices
+                if !separateDeviceList { pairedDevices }
                 directoryControls
             }
         }
+        #if os(macOS)
+        .task {
+            if showInvitation { makeInvitation() }
+            if let selectedNearbyService { await reviewNearby(selectedNearbyService) }
+        }
+        .onDisappear {
+            if let card { model.transfer?.offerPairing(nil, replacing: card.challenge) }
+        }
+        #endif
         .onReceive(clock) { now = $0 }
         .task(id: waiting?.code) { await completeNearbyPairing() }
         .alert("Compare fingerprints on both devices", isPresented: Binding(
@@ -114,16 +126,7 @@ struct PairingSettings: View {
             if let me = model.transfer?.me.peer {
                 Text(me.name)
                 fingerprint(me)
-                Button("Show pairing code") {
-                    model.operation {
-                        guard let transfer = model.transfer else { throw RelayFailure.unavailable }
-                        let invitation = try transfer.makePairingCard()
-                        transfer.offerPairing(invitation)
-                        card = invitation
-                        approvalCode = nil
-                        invitationStatus = nil
-                    }
-                }
+                Button(card == nil ? "Show pairing code" : "Refresh pairing code", action: makeInvitation)
                 if approvalCode == nil, let card, card.expires > now, let value = try? card.code() {
                     if let peer = model.transfer?.pendingPairing() {
                         Text("Pairing request from \(peer.name)")
@@ -137,8 +140,11 @@ struct PairingSettings: View {
                     Text("Expires in \(seconds) s")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Copy pairing code") { copy(card.shortCode) }
-                    DisclosureGroup("Pairing QR code") {
+                    if showInvitation {
                         QR(content: value).accessibilityLabel(Text("Pairing QR code"))
+                    }
+                    DisclosureGroup("Pairing details") {
+                        if !showInvitation { QR(content: value).accessibilityLabel(Text("Pairing QR code")) }
                         ForEach(card.addresses ?? [], id: \.self) { address in
                             LabeledContent("Local address", value: address)
                                 .textSelection(.enabled)
@@ -147,7 +153,7 @@ struct PairingSettings: View {
                     }
                     Button("Cancel invitation") {
                         self.card = nil
-                        model.transfer?.offerPairing(nil)
+                        model.transfer?.offerPairing(nil, replacing: card.challenge)
                         invitationStatus = nil
                     }
                 } else if approvalCode == nil, card != nil {
@@ -160,6 +166,17 @@ struct PairingSettings: View {
                     }
                 }
             }
+        }
+    }
+
+    private func makeInvitation() {
+        model.operation {
+            guard let transfer = model.transfer else { throw RelayFailure.unavailable }
+            let invitation = try transfer.makePairingCard()
+            transfer.offerPairing(invitation)
+            card = invitation
+            approvalCode = nil
+            invitationStatus = nil
         }
     }
 
@@ -262,9 +279,6 @@ struct PairingSettings: View {
                 }
                 PeerAddress(model: model, peer: peer)
             }
-            #if os(macOS)
-            Toggle("Allow this Mac to relay on the local network", isOn: $forwarding)
-            #endif
         }
     }
 
@@ -283,6 +297,7 @@ struct PairingSettings: View {
     private var directoryControls: some View {
         Section("Member directory") {
             #if os(macOS)
+            Toggle("Allow this Mac to relay on the local network", isOn: $forwarding)
             Toggle("Publish paired devices", isOn: $publishDirectory)
             #endif
             let direct = (try? model.library?.directPeers()) ?? []
@@ -396,6 +411,7 @@ struct PairingSettings: View {
             code = ""
             pairingStatus = nil
             model.reload()
+            onPaired?(peer)
         } catch {
             invitationStatus = "Could not approve this request. Start a new invitation."
         }
