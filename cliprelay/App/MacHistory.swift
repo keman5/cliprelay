@@ -58,7 +58,47 @@ extension Summary {
         return .text
     }
 
-    var macSource: String { source == "Local" ? Host.current().localizedName ?? ClipRelayPreferences.localized("This Mac") : source }
+    var macFormat: String {
+        if let type, let uti = UTType(type), !uti.isDynamic, uti != .data {
+            if let ext = uti.preferredFilenameExtension { return ext.uppercased() }
+            if let description = uti.localizedDescription { return description }
+        }
+        let ext = (name as NSString).pathExtension
+        if kind == "File", !ext.isEmpty { return ext.uppercased() }
+        return ClipRelayPreferences.localized(kind)
+    }
+
+    var macDisplayDate: Date? { lastCopied ?? date }
+}
+
+struct MacHistorySession {
+    private(set) var rows: [Summary] = []
+    private var copyRanks: [String: Int64] = [:]
+
+    mutating func update(_ latest: [Summary]) {
+        let previous = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let currentIDs = Set(latest.map(\.id))
+        copyRanks = copyRanks.filter { currentIDs.contains($0.key) }
+        for row in latest {
+            guard let old = previous[row.id], row.historyRank != old.historyRank else { continue }
+            if row.lastCopied != old.lastCopied {
+                // Keep the rank from before the first copy in this presentation.
+                copyRanks[row.id] = copyRanks[row.id] ?? old.historyRank
+            } else {
+                copyRanks.removeValue(forKey: row.id)
+            }
+        }
+        rows = ordered(latest)
+    }
+
+    func ordered(_ rows: [Summary]) -> [Summary] {
+        rows.sorted { first, second in
+            if first.pinned != second.pinned { return first.pinned }
+            let firstRank = copyRanks[first.id] ?? first.historyRank
+            let secondRank = copyRanks[second.id] ?? second.historyRank
+            return firstRank > secondRank
+        }
+    }
 }
 
 struct MacHistory: View {
@@ -67,7 +107,7 @@ struct MacHistory: View {
     @FocusState private var focused: Field?
     @AppStorage("mac.maskSensitive") private var maskSensitive = true
     @AppStorage("mac.maskCodes") private var maskCodes = false
-    @State private var all: [Summary] = []
+    @State private var history = MacHistorySession()
     @State private var matches: [Summary] = []
     @State private var query = ""
     @State private var kinds: Set<MacClipKind> = []
@@ -92,6 +132,7 @@ struct MacHistory: View {
     private enum Field { case search, list }
     private enum Filter { case kind, source }
     private var palette: MacPalette { MacPalette(scheme) }
+    private var all: [Summary] { history.rows }
     private var rows: [Summary] {
         (query.isEmpty ? all : matches).filter {
             matchesKind($0) && matchesSource($0)
@@ -132,6 +173,7 @@ struct MacHistory: View {
             .background(palette.surface)
         }
         .onReceive(model.$rows) { _ in reload() }
+        .onDisappear { history = MacHistorySession() }
         .onChange(of: query) { _, _ in search() }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             if all.contains(where: { $0.expires.map { $0 <= .now } ?? false }) { model.reload() }
@@ -139,7 +181,6 @@ struct MacHistory: View {
         .onExitCommand {
             if filter != nil { filter = nil }
             else if focused != nil { focused = nil }
-            else if confirming { confirming = false }
             else if batch { finishBatch() }
         }
     }
@@ -289,6 +330,7 @@ struct MacHistory: View {
                 }
                 .padding(8)
             }
+            .scrollIndicators(.hidden)
             .focusable()
             .focused($focused, equals: .list)
             .onKeyPress(.downArrow) { move(1) }
@@ -314,14 +356,11 @@ struct MacHistory: View {
                 Text(masked ? "••••••••" : row.name)
                     .font(.system(size: 13, design: row.macKind == .code ? .monospaced : .default))
                     .foregroundStyle(palette.text).lineLimit(1)
-                HStack(spacing: 8) {
-                    Text("From \(source(for: row).title)").lineLimit(1)
-                    if let date = row.date {
-                        Text(date, format: .dateTime.hour().minute())
-                            .lineLimit(1).fixedSize().layoutPriority(1)
-                    }
+                if let date = row.macDisplayDate {
+                    Text(date, format: .dateTime.hour().minute())
+                        .font(.system(size: 11)).foregroundStyle(palette.secondary)
+                        .lineLimit(1)
                 }
-                .font(.system(size: 11)).foregroundStyle(palette.secondary)
             }
             Spacer(minLength: 2)
             MacClipStatus(row: row)
@@ -335,7 +374,6 @@ struct MacHistory: View {
                 .strokeBorder(selected?.id == row.id ? palette.accent : .clear)
                 .allowsHitTesting(false)
         }
-        .help(source(for: row) == .thisMac && row.source != "Local" ? Text(row.source) : Text(batch ? "Select item" : "Click to copy"))
     }
 
     private var batchBar: some View {
@@ -345,23 +383,20 @@ struct MacHistory: View {
                 model.operation { try model.library?.setPinned(checked) }
                 if model.notice.isEmpty { finishBatch() }
             }.disabled(checked.isEmpty)
-            Button(role: .destructive) {
-                if confirming {
-                    model.operation { try model.library?.deleteClips(checked) }
-                    if model.notice.isEmpty { finishBatch() }
-                } else { confirming = true }
-            } label: {
-                Text(confirming ? "Confirm deletion of \(checked.count) items" : "Delete")
-            }.disabled(checked.isEmpty)
+            Button("Delete", role: .destructive) { confirming = true }
+                .foregroundStyle(.red)
+                .disabled(checked.isEmpty)
             Button("Done") { finishBatch() }
             Spacer()
         }
         .font(.system(size: 12)).padding(8)
         .background(palette.accentSoft)
-        .task(id: confirming) {
-            guard confirming else { return }
-            do { try await Task.sleep(for: .seconds(3)) } catch { return }
-            confirming = false
+        .alert("Confirm deletion of \(checked.count) items", isPresented: $confirming) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                model.operation { try model.library?.deleteClips(checked) }
+                if model.notice.isEmpty { finishBatch() }
+            }
         }
     }
 
@@ -374,7 +409,6 @@ struct MacHistory: View {
     private func activate(_ row: Summary) {
         selection = row.id
         if batch {
-            confirming = false
             if !checked.insert(row.id).inserted { checked.remove(row.id) }
         } else { model.copy(row) }
     }
@@ -394,15 +428,16 @@ struct MacHistory: View {
 
     private func reload() {
         do {
-            all = try model.library?.macHistory() ?? []
-            checked.formIntersection(Set(all.map(\.id)))
-            sources.formIntersection(Set(all.map(source(for:))))
+            let latest = try model.library?.macHistory() ?? []
+            history.update(latest)
+            checked.formIntersection(Set(latest.map(\.id)))
+            sources.formIntersection(Set(latest.map(source(for:))))
             search()
         } catch { model.notice = error.localizedDescription }
     }
 
     private func search() {
-        do { matches = query.isEmpty ? [] : try model.library?.macHistory(search: query) ?? [] }
+        do { matches = query.isEmpty ? [] : history.ordered(try model.library?.macHistory(search: query) ?? []) }
         catch { model.notice = error.localizedDescription }
     }
 }
@@ -411,11 +446,12 @@ struct MacClipTile: View {
     let row: Summary
     var body: some View {
         let kind = row.macKind
-        Image(systemName: kind.symbol)
-            .font(.system(size: 15, weight: .medium)).foregroundStyle(kind.color)
-            .frame(width: 34, height: 34)
+        Text(row.macFormat)
+            .font(.system(size: 10, weight: .semibold)).foregroundStyle(kind.color)
+            .lineLimit(1).minimumScaleFactor(0.68)
+            .padding(.horizontal, 3)
+            .frame(width: 42, height: 34)
             .background(kind.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 9))
-            .accessibilityLabel(kind.title)
     }
 }
 
@@ -434,7 +470,21 @@ struct MacClipStatus: View {
             .font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
             .frame(width: 19, height: 19)
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-            .accessibilityLabel(Text(LocalizedStringKey(label))).help(Text(LocalizedStringKey(label)))
+            .accessibilityLabel(Text(LocalizedStringKey(label)))
+    }
+}
+
+struct MacCopyToast: View {
+    var body: some View {
+        Label("Copied", systemImage: "checkmark.circle.fill")
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .overlay { Capsule().strokeBorder(.secondary.opacity(0.22)) }
+            .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+            .padding(.bottom, 12)
+            .allowsHitTesting(false)
     }
 }
 
@@ -522,25 +572,33 @@ struct MacClipDetail: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 6) {
-                    Text(row.macKind.title)
-                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.accent)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(palette.accentSoft, in: RoundedRectangle(cornerRadius: 6))
-                    MacClipStatus(row: row)
-                }
-                contentPreview
-                VStack(spacing: 0) {
-                    metadata("Source device", sourceName)
-                    if let sourceApplication { metadata("Source application", sourceApplication) }
-                    if let date = row.date { metadata("Time", date.formatted(date: .abbreviated, time: .shortened)) }
-                    if let clip {
-                        metadata("Size", clip.text.map { String(localized: "\($0.count) characters") }
-                                 ?? ByteCountFormatter.string(fromByteCount: Int64(clip.bytes.count), countStyle: .file))
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 6) {
+                        Text(row.macFormat)
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.accent)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(palette.accentSoft, in: RoundedRectangle(cornerRadius: 6))
+                        MacClipStatus(row: row)
+                    }
+                    contentPreview
+                    VStack(spacing: 0) {
+                        metadata("Source device", sourceName)
+                        if let sourceApplication { metadata("Source application", sourceApplication) }
+                        if let date = row.date { metadata("Time", date.formatted(date: .abbreviated, time: .shortened)) }
+                        if let date = row.lastCopied { metadata("Last copied", date.formatted(date: .abbreviated, time: .shortened)) }
+                        if let clip {
+                            metadata("Size", clip.text.map { String(localized: "\($0.count) characters") }
+                                     ?? ByteCountFormatter.string(fromByteCount: Int64(clip.bytes.count), countStyle: .file))
+                        }
                     }
                 }
+            }
+            .frame(maxHeight: 330)
+            .accessibilityIdentifier("mac.history.detail.preview")
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Expiration").font(.system(size: 12, weight: .semibold)).foregroundStyle(palette.secondary)
                     HStack(spacing: 4) {
@@ -548,7 +606,6 @@ struct MacClipDetail: View {
                         expiry("5 minutes", seconds: 300)
                         expiry("24 hours", seconds: 86_400)
                     }
-
                 }
                 Grid(horizontalSpacing: 8, verticalSpacing: 8) {
                     GridRow {
@@ -562,18 +619,17 @@ struct MacClipDetail: View {
                     }
                     GridRow {
                         detailButton("Export file", symbol: "square.and.arrow.down", action: export)
-                        detailButton(confirming ? "Confirm deletion" : "Delete", symbol: "trash", color: .red) {
-                            if confirming {
-                                model.operation { try model.library?.delete(row.id) }
-                                if model.notice.isEmpty { confirming = false }
-                            } else { confirming = true }
-                        }
+                        detailButton("Delete", symbol: "trash", destructive: true) { confirming = true }
+                            .accessibilityIdentifier("mac.history.detail.delete")
                     }
                 }
                 if showsCopy { detailButton("Copy", symbol: "doc.on.doc") { model.copy(row) } }
             }
-            .padding(16)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
         }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(palette.surface)
         .task(id: row.id) {
             thumbnail = nil
@@ -582,15 +638,9 @@ struct MacClipDetail: View {
                 thumbnail = await ClipAttachment.load(row.id, from: library)?.thumbnail
             }
         }
-        .task(id: confirming) {
-            guard confirming else { return }
-            do { try await Task.sleep(for: .seconds(3)) } catch { return }
-            confirming = false
-        }
-        .onKeyPress(.escape) {
-            guard confirming else { return .ignored }
-            confirming = false
-            return .handled
+        .alert("Confirm deletion", isPresented: $confirming) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) { model.operation { try model.library?.delete(row.id) } }
         }
     }
 
@@ -616,9 +666,10 @@ struct MacClipDetail: View {
     private func metadata(_ label: String, _ value: String) -> some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text(LocalizedStringKey(label)).foregroundStyle(palette.secondary)
+                Text(LocalizedStringKey(label)).foregroundStyle(palette.secondary).fixedSize()
                 Spacer()
                 Text(value).multilineTextAlignment(.trailing).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .font(.system(size: 12)).padding(.vertical, 7)
             Divider()
@@ -640,15 +691,15 @@ struct MacClipDetail: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private func detailButton(_ title: String, symbol: String, color: Color? = nil,
+    private func detailButton(_ title: String, symbol: String, destructive: Bool = false,
                               action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button(role: destructive ? .destructive : nil, action: action) {
             Label(LocalizedStringKey(title), systemImage: symbol)
                 .font(.system(size: 12, weight: .medium)).lineLimit(1)
-                .foregroundStyle(color ?? palette.text)
+                .foregroundStyle(destructive ? Color.red : palette.text)
                 .frame(maxWidth: .infinity, minHeight: 34)
-                .background(palette.raised, in: RoundedRectangle(cornerRadius: 9))
-                .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(palette.line) }
+                .background(destructive ? Color.red.opacity(0.09) : palette.raised, in: RoundedRectangle(cornerRadius: 9))
+                .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(destructive ? Color.red.opacity(0.3) : palette.line) }
         }
         .buttonStyle(.plain)
     }

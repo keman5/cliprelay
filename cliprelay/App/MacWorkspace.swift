@@ -55,6 +55,7 @@ struct MacWorkspace: View {
 
     @ObservedObject var model: Model
     @State private var page: Page
+    @State private var keyboardNavigation = false
     @AppStorage("clipboard.captureAutomatically") private var automaticCapture = true
     @AppStorage("clipboard.sendAutomatically") private var automaticSend = true
     @Environment(\.colorScheme) private var scheme
@@ -86,7 +87,12 @@ struct MacWorkspace: View {
             }
         }
         .frame(minWidth: 860, minHeight: 520)
+        .overlay(alignment: .bottom) {
+            if page == .history, model.copyToast != nil { MacCopyToast() }
+        }
         .tint(palette.accent)
+        .focusEffectDisabled(!keyboardNavigation)
+        .background(MacWorkspaceFocus(keyboardNavigation: $keyboardNavigation))
     }
 
     private var sidebar: some View {
@@ -172,6 +178,98 @@ struct MacWorkspace: View {
         case .privacy: MacSettingsPanel(model: model, group: .privacy)
         case .storage: MacSettingsPanel(model: model, group: .storage)
         case .about: MacAboutPanel()
+        }
+    }
+}
+
+/// Keeps AppKit from assigning a control on presentation while leaving its key
+/// view loop and SwiftUI's own key handlers in charge of navigation.
+private struct MacWorkspaceFocus: NSViewRepresentable {
+    @Binding var keyboardNavigation: Bool
+
+    func makeNSView(context: Context) -> FocusView {
+        FocusView(keyboardNavigation: $keyboardNavigation)
+    }
+
+    func updateNSView(_ view: FocusView, context: Context) {
+        view.keyboardNavigation = $keyboardNavigation
+    }
+
+    static func dismantleNSView(_ view: FocusView, coordinator: ()) {
+        view.stopObserving()
+    }
+
+    final class FocusView: NSView {
+        var keyboardNavigation: Binding<Bool>
+        private var hasInteracted = false
+        private var keyObserver: NSObjectProtocol?
+        private var eventMonitor: Any?
+
+        init(keyboardNavigation: Binding<Bool>) {
+            self.keyboardNavigation = keyboardNavigation
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopObserving()
+            hasInteracted = false
+            guard let window else { return }
+            keyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.clearInitialFocus() }
+                }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                self?.handle(event) == true ? nil : event
+            }
+            clearInitialFocus()
+        }
+
+        private func clearInitialFocus() {
+            // The hosting view can register its key views as the window opens.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window,
+                      !self.hasInteracted, window.attachedSheet == nil else { return }
+                window.makeFirstResponder(window)
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> Bool {
+            guard let window, event.window === window, window.attachedSheet == nil else { return false }
+            hasInteracted = true
+            guard event.type == .keyDown else {
+                keyboardNavigation.wrappedValue = false
+                return false
+            }
+            let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+            if event.keyCode == 48, modifiers.subtracting(.shift).isEmpty {
+                keyboardNavigation.wrappedValue = true
+                if window.firstResponder === window {
+                    if modifiers.contains(.shift) { window.selectPreviousKeyView(nil) }
+                    else { window.selectNextKeyView(nil) }
+                    return window.firstResponder !== window
+                }
+            } else if event.keyCode == 53, modifiers.isEmpty {
+                if let editor = window.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
+                keyboardNavigation.wrappedValue = false
+                // Let the focused control handle Escape before releasing focus.
+                let responder = window.firstResponder
+                DispatchQueue.main.async { [weak self, weak window, weak responder] in
+                    guard let self, let window, self.window === window,
+                          window.attachedSheet == nil, window.firstResponder === responder else { return }
+                    if window.makeFirstResponder(window) { self.hasInteracted = false }
+                }
+            }
+            return false
+        }
+
+        func stopObserving() {
+            if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+            if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+            keyObserver = nil
+            eventMonitor = nil
         }
     }
 }

@@ -6,16 +6,42 @@ struct DiagnosticsSection: View {
     @State private var milliseconds: Double = 0
 
     var body: some View {
-        Section("Diagnostics") {
-            if let usage {
-                LabeledContent("History", value: String(usage.entries))
-                LabeledContent("History storage", value: bytes(usage.historyBytes) + " / 160 MB")
-                LabeledContent("Pending", value: String(usage.jobs))
-                LabeledContent("Queued data", value: bytes(usage.queuedBytes))
-                LabeledContent("Page read time", value: milliseconds.formatted(.number.precision(.fractionLength(2))) + " ms")
+        Group {
+            #if os(macOS)
+            MacSettingsCard(title: "Diagnostics") {
+                details
+                Button("Refresh diagnostics", action: refresh).padding(.top, 9)
             }
-            Button("Refresh diagnostics", action: refresh)
+            #else
+            Section("Diagnostics") {
+                details
+                Button("Refresh diagnostics", action: refresh)
+            }
+            #endif
         }.onAppear(perform: refresh)
+    }
+
+    @ViewBuilder private var details: some View {
+        if let usage {
+            metric("History", String(usage.entries))
+            metric("History storage", bytes(usage.historyBytes) + " / 160 MB")
+            metric("Pending", String(usage.jobs))
+            metric("Queued data", bytes(usage.queuedBytes))
+            metric("Page read time", milliseconds.formatted(.number.precision(.fractionLength(2))) + " ms")
+        }
+    }
+
+    @ViewBuilder private func metric(_ title: LocalizedStringKey, _ value: String) -> some View {
+        #if os(macOS)
+        HStack {
+            Text(title).font(.callout.weight(.semibold))
+            Spacer()
+            Text(value).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+        }.padding(.vertical, 9)
+        Divider()
+        #else
+        LabeledContent { Text(value) } label: { Text(title) }
+        #endif
     }
     private func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .decimal)

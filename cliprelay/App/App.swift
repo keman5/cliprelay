@@ -25,6 +25,8 @@ import VisionKit
     var library:Library? {transfer?.library}
     #if os(macOS)
     @Published private(set) var menuRows: [Summary] = []
+    @Published private(set) var copyToast: UUID?
+    private var copyToastTask: Task<Void, Never>?
     private var captureTimer: Timer?
     private var changeCount = NSPasteboard.general.changeCount
     private var nextAutomaticSync = Date.distantPast
@@ -123,7 +125,17 @@ import VisionKit
             guard let library else { throw RelayFailure.storage }
             try library.useClip(row.id) { try systemCopy($0) }
         }
-        if notice.isEmpty { notice = ClipRelayPreferences.localized("Copied") }
+        guard notice.isEmpty else { return }
+        #if os(macOS)
+        copyToastTask?.cancel()
+        copyToast = UUID()
+        copyToastTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1.6)) } catch { return }
+            self?.copyToast = nil
+        }
+        #else
+        notice = ClipRelayPreferences.localized("Copied")
+        #endif
     }
     #if os(macOS)
     private func pollClipboard() {

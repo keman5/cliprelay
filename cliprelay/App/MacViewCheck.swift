@@ -4,6 +4,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum MacViewCheck {
+    private final class HiddenFocusWindow: NSWindow {
+        override var isKeyWindow: Bool { true }
+    }
     @MainActor static func run() throws {
         let application = NSApplication.shared
         application.setActivationPolicy(.prohibited)
@@ -12,6 +15,7 @@ enum MacViewCheck {
         defer { try? FileManager.default.removeItem(at: root) }
         try checkClipboard(model, in: root)
         try checkItemActions(in: root.appendingPathComponent("actions"))
+        try checkCopyOrder(in: root.appendingPathComponent("copy-order"))
         try checkExclusions()
         try checkSettings(in: root.appendingPathComponent("settings"))
         let size = NSSize(width: 980, height: 600)
@@ -23,7 +27,62 @@ enum MacViewCheck {
             try render(MacWorkspace(model: model, initialPage: page), size: size, in: window, name: String(describing: page))
         }
         try render(MenuContent(model: model), size: NSSize(width: 480, height: 540), in: window, name: "menu")
+        let long = Clip.text(String(repeating: "A long clipboard entry for checking the preview scroll area.\n", count: 36))
+        try model.library?.save(long, source: "TextEdit")
+        model.reload()
+        try render(MacWorkspace(model: model), size: NSSize(width: 860, height: 520), in: window, name: "history-long")
+        if let detail = try model.library?.macHistory().first {
+            try render(MacClipDetail(model: model, row: detail), size: NSSize(width: 374, height: 510), in: window, name: "menu-detail-long")
+        }
         print("PASS hidden Mac workspace pages and menu layout")
+        try checkWorkspaceFocus(model, size: size)
+    }
+
+    @MainActor private static func checkWorkspaceFocus(_ model: Model, size: NSSize) throws {
+        let window = HiddenFocusWindow(contentRect: NSRect(origin: NSPoint(x: -4000, y: -4000), size: size),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let host = NSHostingView(rootView: MacWorkspace(model: model))
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        // Simulate AppKit selecting a key view while the window opens, without
+        // making the test window visible or activating the app.
+        let control = NSButton(title: "Focus probe", target: nil, action: nil)
+        host.addSubview(control)
+        window.initialFirstResponder = control
+        guard window.makeFirstResponder(control), window.firstResponder === control else {
+            throw RelayFailure.invalid
+        }
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
+        guard !window.isVisible, window.firstResponder === window else {
+            print("FAIL workspace should open without a focused control")
+            throw RelayFailure.invalid
+        }
+
+        func press(_ key: String, code: UInt16, modifiers: NSEvent.ModifierFlags = []) throws {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: key,
+                charactersIgnoringModifiers: key, isARepeat: false, keyCode: code) else { throw RelayFailure.invalid }
+            NSApp.sendEvent(event)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+
+        // Verify forward navigation both on opening and after Escape.
+        for _ in 0..<2 {
+            try press("\t", code: 48)
+            guard window.firstResponder === control else {
+                print("FAIL Tab should enter the window's key-view loop")
+                throw RelayFailure.invalid
+            }
+            try press("\u{1b}", code: 53)
+            guard window.firstResponder === window else {
+                print("FAIL Escape should release keyboard focus")
+                throw RelayFailure.invalid
+            }
+        }
+        print("PASS Mac workspace opens without focus, Tab enters focus, and Escape clears it")
     }
 
     @MainActor private static func render<V: View>(_ view: V, size: NSSize, in window: NSWindow, name: String) throws {
@@ -68,6 +127,50 @@ enum MacViewCheck {
         try library.setExpiry(second.id.uuidString, after: 300, now: Date.now.addingTimeInterval(-600))
         guard try library.macHistory().isEmpty else { throw RelayFailure.invalid }
         print("PASS full-text search, bulk pin, burn after successful copy, and local expiry")
+    }
+
+    private static func checkCopyOrder(in root: URL) throws {
+        let library = try Library(root)
+        let first = Clip.text("First")
+        let second = Clip.text("Second")
+        let third = Clip.text("Third")
+        let png = Summary(id: "image", name: "Screenshot", kind: "Image", source: "Local", pinned: false,
+                          type: UTType.png.identifier)
+        let rtf = Summary(id: "rich", name: "Formatted text", kind: "Rich text", source: "Local", pinned: false,
+                          type: UTType.rtf.identifier)
+        guard png.macFormat == "PNG", rtf.macFormat == "RTF" else { throw RelayFailure.invalid }
+        _ = try library.saveCopies([first, second], source: "Local")
+        var history = MacHistorySession()
+        history.update(try library.macHistory())
+        let initialDate = history.rows.last?.macDisplayDate
+        try library.useClip(first.id.uuidString) { _ in }
+        history.update(try library.macHistory())
+        let stored = try Library(root).macHistory()
+        guard history.rows.map(\.id) == [second, first].map({ $0.id.uuidString }),
+              history.rows.last?.macDisplayDate == initialDate,
+              history.rows.last?.lastCopied == nil,
+              stored.first?.id == first.id.uuidString, stored.first?.lastCopied != nil else {
+            print("FAIL copying changed the visible history order or timestamp")
+            throw RelayFailure.invalid
+        }
+        var reopened = MacHistorySession()
+        reopened.update(stored)
+        guard reopened.rows.first?.id == first.id.uuidString,
+              reopened.rows.first?.lastCopied == stored.first?.lastCopied else { throw RelayFailure.invalid }
+        _ = try library.saveCopies([third], source: "Local")
+        try library.useClip(first.id.uuidString) { _ in }
+        history.update(try library.macHistory())
+        guard history.rows.map(\.id) == [third, second, first].map({ $0.id.uuidString }) else { throw RelayFailure.invalid }
+        _ = try library.saveCopies([first], source: "TextEdit")
+        history.update(try library.macHistory())
+        guard history.rows.map(\.id) == [third, second, first].map({ $0.id.uuidString }),
+              try history.ordered(library.macHistory(search: "First")).first?.macDisplayDate == initialDate else {
+            throw RelayFailure.invalid
+        }
+        try library.pin(first.id.uuidString)
+        history.update(try library.macHistory())
+        guard history.rows.first?.id == first.id.uuidString, history.rows.first?.pinned == true else { throw RelayFailure.invalid }
+        print("PASS copy order and timestamps stay stable until reopening, including search results")
     }
 
     private static func checkExclusions() throws {

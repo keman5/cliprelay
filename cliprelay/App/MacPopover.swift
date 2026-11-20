@@ -15,6 +15,7 @@ struct MenuContent: View {
     @State private var search = ""
     @State private var pairing = false
     @State private var selectedID: String?
+    @State private var session = MacHistorySession()
     @FocusState private var searching: Bool
     @AppStorage("mac.maskSensitive") private var maskSensitive = true
     @AppStorage("mac.maskCodes") private var maskCodes = false
@@ -22,9 +23,7 @@ struct MenuContent: View {
     private var palette: MacPalette { MacPalette(scheme) }
 
     var body: some View {
-        let detail = selectedID.flatMap { id in
-            (try? model.library?.macHistory())?.first { $0.id == id }
-        }
+        let detail = session.rows.first { $0.id == selectedID }
         return VStack(spacing: 0) {
             if pairing {
                 HStack(spacing: 9) {
@@ -59,6 +58,12 @@ struct MenuContent: View {
         .frame(width: 374, height: 568)
         .background(palette.surface)
         .foregroundStyle(palette.text)
+        .overlay(alignment: .bottom) {
+            if !pairing, model.copyToast != nil { MacCopyToast() }
+        }
+        .onReceive(model.$rows) { _ in
+            session.update((try? model.library?.macHistory()) ?? model.menuRows)
+        }
         .onExitCommand {
             if searching { searching = false }
             else if pairing { pairing = false }
@@ -135,7 +140,6 @@ struct MenuContent: View {
                         ForEach(rows) { row in
                             Button { model.copy(row) } label: { label(for: row) }
                                 .buttonStyle(MacMenuRowStyle())
-                                .help("Copy")
                                 .accessibilityIdentifier("mac.menu.copy.\(row.id)")
                                 .contextMenu {
                                     Button("Copy") { model.copy(row) }
@@ -153,6 +157,7 @@ struct MenuContent: View {
                     }
                 }
             }
+            .scrollIndicators(.hidden)
             if !model.notice.isEmpty {
                 Text(model.notice).font(.caption).foregroundStyle(palette.secondary)
                     .lineLimit(1).padding(4)
@@ -162,7 +167,7 @@ struct MenuContent: View {
     }
 
     private var records: [Summary] {
-        let rows = (try? model.library?.macHistory(search: search)) ?? model.menuRows
+        let rows = search.isEmpty ? session.rows : session.ordered((try? model.library?.macHistory(search: search)) ?? [])
         return rows.filter {
             switch filter {
             case .all: true
@@ -176,18 +181,12 @@ struct MenuContent: View {
         let masked = MacHistoryPrivacy.isMasked(row.name, sensitive: maskSensitive, codes: maskCodes, forDetail: false)
         return HStack(spacing: 9) {
             MacClipTile(row: row)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(masked ? "••••••••" : row.name)
-                    .font(.system(size: row.macKind == .code ? 12 : 13, design: row.macKind == .code ? .monospaced : .default))
-                    .lineLimit(1)
-                Text("From \(row.source)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.secondary)
-                    .lineLimit(1)
-            }
+            Text(masked ? "••••••••" : row.name)
+                .font(.system(size: row.macKind == .code ? 12 : 13, design: row.macKind == .code ? .monospaced : .default))
+                .lineLimit(1)
             Spacer(minLength: 4)
             MacClipStatus(row: row)
-            if let date = row.date {
+            if let date = row.macDisplayDate {
                 Text(date, format: .relative(presentation: .named, unitsStyle: .abbreviated))
                     .font(.system(size: 10))
                     .foregroundStyle(palette.muted)

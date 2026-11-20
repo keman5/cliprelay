@@ -205,6 +205,7 @@ struct MacDevicesPanel: View {
                 if ((try? model.library?.directPeers()) ?? []).contains(peer) {
                     Button("撤销信任", role: .destructive) { pendingRevocation = peer }
                         .foregroundStyle(.red)
+                        .foregroundStyle(.red)
                 }
             }
         }
@@ -258,6 +259,20 @@ private extension View {
         padding(14).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
             .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.secondary.opacity(0.18)) }
+    }
+}
+
+struct MacSettingsCard<Content: View>: View {
+    let title: LocalizedStringKey
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title).font(.headline).padding(.bottom, 10)
+            Divider()
+            content
+        }
+        .panelCard()
     }
 }
 
@@ -358,6 +373,7 @@ struct MacSettingsPanel: View {
     @State private var testing = false
     @State private var confirmRemove = false
     @State private var confirmClear = false
+    @State private var confirmCacheClear = false
     @State private var confirmRetention = false
     @State private var pendingRetention = 0
     @State private var exporting = false
@@ -442,6 +458,7 @@ struct MacSettingsPanel: View {
                     }
                 }.disabled(credential.isEmpty)
                 Button("移除", role: .destructive) { confirmRemove = true }
+                    .foregroundStyle(.red)
             }
             Divider()
             toggle("断线自动同步", "连接恢复后重试待同步内容", $flush)
@@ -471,45 +488,50 @@ struct MacSettingsPanel: View {
                     Toggle("生物识别解锁", isOn: Binding(get: { biometrics }, set: setBiometrics))
                         .toggleStyle(.switch).labelsHidden()
                 }
-                Divider()
-                toggle("自动记录剪贴板", "将这台 Mac 上新复制的内容加入历史", $capture)
                 Text("设备间使用 HPKE 加密。开启测试中继时，中继仅转发加密数据。")
                     .font(.callout).foregroundStyle(.secondary).padding(.top, 12)
             }.panelCard()
-            Form { Section("History") { ClipboardExclusionSettings(model: model) } }
-                .formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
+            MacSettingsCard(title: "History") {
+                toggle("自动记录剪贴板", "将这台 Mac 上新复制的内容加入历史", $capture)
+                Divider()
+                ClipboardExclusionSettings(model: model).padding(.top, 9)
+            }
         }
     }
 
     private var storage: some View {
         VStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 12) {
-                Picker("历史保留时长", selection: Binding(get: { retentionHours }, set: changeRetention)) {
-                    Text("24 小时").tag(24)
-                    Text("7 天").tag(168)
-                    Text("30 天").tag(720)
-                    Text("永久").tag(0)
-                }.pickerStyle(.segmented)
+            MacSettingsCard(title: "History") {
+                row("历史保留时长", "超过期限的本机历史会自动删除，置顶条目会保留。") {
+                    Picker("历史保留时长", selection: Binding(get: { retentionHours }, set: changeRetention)) {
+                        Text("24 小时").tag(24)
+                        Text("7 天").tag(168)
+                        Text("30 天").tag(720)
+                        Text("永久").tag(0)
+                    }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+                Divider()
                 let bytes = (try? model.library?.usage().historyBytes) ?? 0
-                Text("本地历史占用 · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .decimal)) / 160 MB")
-                    .font(.callout).foregroundStyle(.secondary)
-                ProgressView(value: Double(bytes), total: 160_000_000).labelsHidden()
-                HStack {
-                    Button {
-                        model.library?.clearReadCache()
-                        model.notice = ClipRelayPreferences.localized("已清理读取缓存")
-                    } label: { Label("清理缓存", systemImage: "trash") }
-                    Button { exportHistory() } label: { Label("导出全部历史", systemImage: "arrow.down.to.line") }
-                        .disabled(exporting || model.library == nil)
-                    Spacer()
+                row("History storage", "本地历史占用 · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .decimal)) / 160 MB") {
+                    ProgressView(value: Double(bytes), total: 160_000_000).labelsHidden().frame(width: 160)
+                }
+                Divider()
+                row("History", "Manage local clipboard data") {
+                    Button("清理缓存", role: .destructive) { confirmCacheClear = true }.foregroundStyle(.red)
+                    Button("导出全部历史", action: exportHistory).disabled(exporting || model.library == nil)
                     Button("清空全部历史", role: .destructive) { confirmClear = true }
                         .foregroundStyle(.red)
                 }
-            }.panelCard()
-            Form {
-                ArchiveSettings(model: model)
-                DiagnosticsSection(model: model)
-            }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
+            }
+            ArchiveSettings(model: model)
+            DiagnosticsSection(model: model)
+        }
+        .alert("Clear cache?", isPresented: $confirmCacheClear) {
+            Button("取消", role: .cancel) {}
+            Button("清理缓存", role: .destructive) {
+                model.library?.clearReadCache()
+                model.notice = ClipRelayPreferences.localized("已清理读取缓存")
+            }
         }
         .alert("清空全部历史？", isPresented: $confirmClear) {
             Button("取消", role: .cancel) {}

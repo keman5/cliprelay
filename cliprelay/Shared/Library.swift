@@ -14,6 +14,8 @@ struct Summary: Identifiable {
     var expirySeconds: Double? = nil
     var localOnly = false
     var received: Bool? = nil
+    var lastCopied: Date? = nil
+    var historyRank: Int64 = 0
 }
 
 struct SavedPhrase: Identifiable, Codable, Equatable {
@@ -72,7 +74,7 @@ final class Library {
                 AND EXISTS(SELECT 1 FROM directory_settings JOIN peers ON owner=peers.id)
                 AND id NOT IN(SELECT id FROM peers);
             """, nil, nil, nil) == SQLITE_OK else { throw RelayFailure.storage }
-        if try schemaVersion() < 4 {
+        if try schemaVersion() < 5 {
             try run("BEGIN IMMEDIATE")
             do {
                 if try schemaVersion() == 0 {
@@ -114,6 +116,10 @@ final class Library {
                 if try schemaVersion() == 3 {
                     try run("ALTER TABLE clips ADD COLUMN received INTEGER")
                     try run("PRAGMA user_version=4")
+                }
+                if try schemaVersion() == 4 {
+                    try run("ALTER TABLE clips ADD COLUMN last_copied REAL")
+                    try run("PRAGMA user_version=5")
                 }
                 try run("COMMIT")
             } catch { try? run("ROLLBACK"); throw error }
@@ -305,7 +311,7 @@ final class Library {
         cachedPages.append((key, rows))
         return rows
     }
-    private static let summaryColumns = "id,name,kind,source,pinned,captured,uti,burn,expires,shared,expiry_seconds,received"
+    private static let summaryColumns = "id,name,kind,source,pinned,captured,uti,burn,expires,shared,expiry_seconds,received,last_copied,rowid"
 
     private func summary(_ statement: OpaquePointer) -> Summary {
         func date(_ column: Int32) -> Date? {
@@ -318,7 +324,8 @@ final class Library {
                        burn: sqlite3_column_int(statement, 7) != 0, expires: date(8),
                        expirySeconds: sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 10),
                        localOnly: sqlite3_column_int(statement, 9) == 0,
-                       received: sqlite3_column_type(statement, 11) == SQLITE_NULL ? nil : sqlite3_column_int(statement, 11) != 0)
+                       received: sqlite3_column_type(statement, 11) == SQLITE_NULL ? nil : sqlite3_column_int(statement, 11) != 0,
+                       lastCopied: date(12), historyRank: sqlite3_column_int64(statement, 13))
     }
 
     #if os(macOS)
@@ -418,7 +425,15 @@ final class Library {
                 sqlite3_column_int($0, 0) != 0
             }.first ?? false
             try use(clip)
-            if burn { try removeClip(id) } else { try markRecent(id) }
+            if burn {
+                try removeClip(id)
+            } else {
+                try markRecent(id)
+                #if os(macOS)
+                try run("UPDATE clips SET last_copied=CAST(? AS REAL) WHERE id=?",
+                        [.text(String(Date.now.timeIntervalSince1970)), .text(id)])
+                #endif
+            }
             try run("COMMIT")
         } catch { try? run("ROLLBACK"); throw error }
     }

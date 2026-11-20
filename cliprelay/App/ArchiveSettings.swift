@@ -11,14 +11,42 @@ struct ArchiveSettings: View {
     @State private var exportURL: URL?
 
     var body: some View {
-        Section("Backup") {
-            SecureField("Archive password", text: $password)
-                .modifier(SettingsInputFocus())
-            Button("Create encrypted backup", action: export).disabled(working || password.isEmpty)
-            Button("Import encrypted backup") { picking = true }.disabled(working || password.isEmpty)
-            if let exportURL {
-                ShareLink(item: exportURL) { Label("Share encrypted backup", systemImage: "square.and.arrow.up") }
+        #if os(macOS)
+        settings.alert("Import clipboard backup?", isPresented: $confirm) {
+            importActions
+        } message: {
+            importMessage
+        }
+        #else
+        settings.confirmationDialog("Import clipboard backup?", isPresented: $confirm, titleVisibility: .visible) {
+            importActions
+        } message: {
+            importMessage
+        }
+        #endif
+    }
+
+    private var settings: some View {
+        Group {
+            #if os(macOS)
+            MacSettingsCard(title: "Backup") {
+                HStack {
+                    passwordField.frame(maxWidth: 170)
+                    Spacer()
+                    backupActions
+                }.padding(.vertical, 9)
+                if let exportURL {
+                    Divider()
+                    shareBackup(exportURL).padding(.top, 9)
+                }
             }
+            #else
+            Section("Backup") {
+                passwordField
+                backupActions
+                if let exportURL { shareBackup(exportURL) }
+            }
+            #endif
         }
         .fileImporter(isPresented: $picking, allowedContentTypes: [.data]) { result in
             do {
@@ -38,13 +66,29 @@ struct ArchiveSettings: View {
                 }
             } catch { model.notice = error.localizedDescription }
         }
-        .confirmationDialog("Import clipboard backup?", isPresented: $confirm, titleVisibility: .visible) {
-            Button("Import") { commit() }.disabled((contents?.count ?? 0) == 0)
-            Button("Cancel", role: .cancel) { contents = nil }
-        } message: {
-            if let contents {
-                Text("\(contents.count) records to check for duplicates. \(contents.skipped) private or unavailable records skipped.")
-            }
+    }
+
+    private var passwordField: some View {
+        SecureField("Archive password", text: $password).modifier(SettingsInputFocus())
+    }
+
+    @ViewBuilder private var backupActions: some View {
+        Button("Create encrypted backup", action: export).disabled(working || password.isEmpty)
+        Button("Import encrypted backup") { picking = true }.disabled(working || password.isEmpty)
+    }
+
+    private func shareBackup(_ url: URL) -> some View {
+        ShareLink(item: url) { Label("Share encrypted backup", systemImage: "square.and.arrow.up") }
+    }
+
+    @ViewBuilder private var importActions: some View {
+        Button("Import") { commit() }.disabled((contents?.count ?? 0) == 0)
+        Button("Cancel", role: .cancel) { contents = nil }
+    }
+
+    @ViewBuilder private var importMessage: some View {
+        if let contents {
+            Text("\(contents.count) records to check for duplicates. \(contents.skipped) private or unavailable records skipped.")
         }
     }
 

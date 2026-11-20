@@ -66,29 +66,55 @@ struct ClipboardExclusionSettings: View {
     @AppStorage(ClipboardExclusions.key) private var stored: String?
     @AppStorage(ClipboardExclusions.legacyKey) private var legacy: String?
     @State private var pickingApps = false
+    @State private var expanded = true
+    @State private var pendingRemoval: String?
     @ObservedObject var model: Model
 
     private var exclusions: [String] { ClipboardExclusions.ids(saved: stored, legacy: legacy) }
 
     var body: some View {
-        DisclosureGroup("Excluded apps") {
-            ForEach(exclusions, id: \.self) { id in
-                let title = ClipboardExclusions.title(for: id)
-                HStack {
-                    Text(verbatim: title)
-                    Spacer()
-                    Button(role: .destructive) {
-                        stored = exclusions.filter { $0 != id }.joined(separator: "\n")
-                    } label: {
-                        Image(systemName: "minus.circle")
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !exclusions.isEmpty {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(exclusions, id: \.self) { id in
+                                let title = ClipboardExclusions.title(for: id)
+                                HStack {
+                                    Text(verbatim: title).lineLimit(1)
+                                    Spacer()
+                                    Button(role: .destructive) { pendingRemoval = id } label: {
+                                        Image(systemName: "minus.circle").foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel(Text("Remove \(title) from excluded apps"))
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .overlay(alignment: .bottom) { if id != exclusions.last { Divider() } }
+                            }
+                        }
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(Text("Remove \(title) from excluded apps"))
+                    .frame(height: CGFloat(min(exclusions.count, 5)) * 32)
+                    .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                    .accessibilityIdentifier("mac.settings.excludedApps")
+                }
+                Button { pickingApps = true } label: {
+                    Label("Add apps…", systemImage: "plus")
                 }
             }
-            Button { pickingApps = true } label: {
-                Label("Add apps…", systemImage: "plus")
+            .padding(.top, 8)
+        } label: {
+            Text("Excluded apps").font(.callout.weight(.semibold))
+        }
+        .alert("Remove excluded app?", isPresented: Binding(
+            get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }), presenting: pendingRemoval) { id in
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                stored = exclusions.filter { $0 != id }.joined(separator: "\n")
             }
+        } message: { id in
+            Text("Clipboard content from \(ClipboardExclusions.title(for: id)) can be recorded again.")
         }
         .fileImporter(isPresented: $pickingApps, allowedContentTypes: [.applicationBundle], allowsMultipleSelection: true) { result in
             model.operation {
