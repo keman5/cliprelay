@@ -105,7 +105,9 @@ enum ClipArchive {
                 plaintext = try Codec.pack(Record(clip: clip, source: "Keyboard", pinned: true, phrase: p))
             } else {
                 let entry = records[index]
-                plaintext = try Codec.pack(Record(clip: library.clip(entry.id), source: entry.source, pinned: entry.pinned))
+                var clip = try library.clip(entry.id)
+                clip.date = entry.captured
+                plaintext = try Codec.pack(Record(clip: clip, source: entry.source, pinned: entry.pinned))
             }
             guard plaintext.count <= recordLimit,
                   let frame = try AES.GCM.seal(plaintext, using: key, authenticating: header + number(index)).combined

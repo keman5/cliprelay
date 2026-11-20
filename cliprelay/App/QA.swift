@@ -221,6 +221,42 @@ enum QA {
         let extensionConnection = try Library(dir)
         try extensionConnection.delete(pinned.id.uuidString)
         guard try library.page(kind: "Pinned", search: "keep").isEmpty else { throw RelayFailure.invalid }
+        try testHistoryDuplicates(in: dir.appendingPathComponent("duplicates"))
+    }
+
+    static func testHistoryDuplicates(in dir: URL) throws {
+        let library = try Library(dir)
+        let device = try Identity(secret: Data(repeating: 42, count: 32), name: "Mac")
+        var original = Clip.text("Same content")
+        original.date = Date(timeIntervalSince1970: floor(Date.now.timeIntervalSince1970))
+        var newer = Clip(name: "Same content", type: "public.rtf", bytes: Data(#"{\rtf1 Same content}"#.utf8), plain: original.text)
+        newer.date = original.date.addingTimeInterval(1)
+        try library.saveCopies([original], source: "Notes")
+        try library.pin(original.id.uuidString)
+        try library.save(newer, source: device.peer.name, received: true)
+        try library.save(original, source: "Old retry", received: true)
+        let reopened = try Library(dir)
+        let visible = try reopened.page()
+        guard visible.count == 1, visible.first?.id == newer.id.uuidString,
+              visible.first?.source == device.peer.name, visible.first?.pinned == true,
+              try reopened.recordCount(kind: "") == 1, try reopened.page(kind: "Text").isEmpty else {
+            print("FAIL duplicate clipboard content should show only the latest source")
+            throw RelayFailure.invalid
+        }
+        var recopy = Clip.text("Same content")
+        recopy.date = newer.date.addingTimeInterval(1)
+        try reopened.saveCopies([recopy], source: "Safari")
+        guard let row = try library.page().first, row.source == "Safari", row.pinned,
+              try library.page().count == 1, try library.hubHistory().first?.captured == recopy.date,
+              try library.archiveIDs().first?.captured == recopy.date, try library.usage().entries == 1 else {
+            print("FAIL recopy should update the source and timestamp in history and exports")
+            throw RelayFailure.invalid
+        }
+        try reopened.pin(row.id)
+        guard try library.page(kind: "Pinned").isEmpty else { throw RelayFailure.invalid }
+        try reopened.delete(row.id)
+        guard try library.page().isEmpty else { throw RelayFailure.invalid }
+        print("PASS clipboard history deduplicates content, keeps the latest source and preserves pinning")
     }
     #if os(macOS)
     static func testForwarding(in dir: URL) async throws {

@@ -702,7 +702,7 @@ struct MacSettingsPanel: View {
                             let clip = try library.clip(record.id)
                             let value = clip.text ?? clip.name
                             let protected = MacHistoryPrivacy.isMasked(value, sensitive: sensitive, codes: codes, forDetail: false)
-                            return "[\(clip.date.ISO8601Format())] \(record.source) · \(protected ? "******" : value)"
+                            return "[\(record.captured.ISO8601Format())] \(record.source) · \(protected ? "******" : value)"
                         }.joined(separator: "\n")
                         try Data(data.utf8).write(to: url, options: .atomic)
                     }.value

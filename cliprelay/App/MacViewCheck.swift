@@ -19,6 +19,7 @@ enum MacViewCheck {
         let model = Model()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
+        try QA.testHistoryDuplicates(in: root.appendingPathComponent("duplicates"))
         try checkClipboard(model, in: root)
         try checkComposerPaste(in: root.appendingPathComponent("composer"))
         try checkAutomaticSync(model)
