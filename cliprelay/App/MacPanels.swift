@@ -19,6 +19,7 @@ struct MacPairingPanel: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 360, idealWidth: 440, minHeight: 380)
+        .macFeedbackOverlay(model.macFeedback, copyConfirmation: model.macCopyConfirmation)
     }
 }
 
@@ -131,8 +132,8 @@ struct MacDevicesPanel: View {
                presenting: pendingRevocation) { peer in
             Button("取消", role: .cancel) { pendingRevocation = nil }
             Button("撤销信任", role: .destructive) {
-                model.operation { try model.library?.unpair(peer) }
-                if model.notice.isEmpty, let local { select(.local, noteKey: local.service) }
+                let revoked = model.macOperation(at: "device.revoke.\(peer.id)") { try model.library?.unpair(peer) }
+                if revoked, let local { select(.local, noteKey: local.service) }
             }
         } message: { peer in
             Text("\(peer.name) 需要重新配对后才能同步。")
@@ -197,14 +198,18 @@ struct MacDevicesPanel: View {
                     } label: { Label("发送测试条目", systemImage: "paperplane") }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy)
+                    .macFeedbackTarget("device.test.\(peer.id)")
                     Button {
-                        try? systemCopy(.text(peer.fingerprint))
-                        model.notice = ClipRelayPreferences.localized("已复制设备指纹")
+                        model.macCopy(at: "device.fingerprint.\(peer.id)") {
+                            try systemCopy(.text(peer.fingerprint))
+                        }
                     } label: { Label("复制指纹", systemImage: "document.on.document") }
+                    .macFeedbackTarget("device.fingerprint.\(peer.id)")
                 }
                 if ((try? model.library?.directPeers()) ?? []).contains(peer) {
                     Button("撤销信任", role: .destructive) { pendingRevocation = peer }
                         .foregroundStyle(.red)
+                        .macFeedbackTarget("device.revoke.\(peer.id)")
                         .foregroundStyle(.red)
                 }
             }
@@ -218,7 +223,7 @@ struct MacDevicesPanel: View {
                 TextField("例如：书房、爸妈用", text: $note)
                     .modifier(SettingsInputFocus())
                     .onSubmit { saveNote(key: key) }
-                Button("保存") { saveNote(key: key) }
+                Button("保存") { saveNote(key: key) }.macFeedbackTarget("device.note.\(key)")
             }
         }
     }
@@ -230,13 +235,15 @@ struct MacDevicesPanel: View {
         if let encoded = try? JSONEncoder().encode(updated) {
             notesData = encoded
             note = value
-            model.notice = ClipRelayPreferences.localized(value.isEmpty ? "备注已清空" : "备注已保存")
+            model.showMacFeedback(ClipRelayPreferences.localized(value.isEmpty ? "备注已清空" : "备注已保存"),
+                                  at: "device.note.\(key)")
         }
     }
 
     private func sendTest(to peer: Peer) async {
-        guard let transfer = model.transfer else { return }
+        let target = "device.test.\(peer.id)"
         do {
+            guard let transfer = model.transfer else { throw RelayFailure.storage }
             let clip = Clip.text("随贴测试条目 · \(transfer.me.peer.name)")
             let settings = ClipRelayPreferences.defaults
             let address = settings.string(forKey: "relay.url") ?? "https://cliprelay-test.macseek.cc"
@@ -246,9 +253,10 @@ struct MacDevicesPanel: View {
             try transfer.library.save(clip, source: "Local")
             try transfer.library.queue(clip.id.uuidString, peer: peer, wire: wire)
             let routes = try await transfer.flush(to: peer, cloud: cloud, only: clip.id.uuidString)
-            model.notice = routes.isEmpty ? ClipRelayPreferences.localized("测试条目等待同步") : String(localized: "已向 \(peer.name) 发送测试条目")
+            let message = routes.isEmpty ? ClipRelayPreferences.localized("测试条目等待同步") : String(localized: "已向 \(peer.name) 发送测试条目")
+            model.showMacFeedback(message, at: target)
         } catch {
-            model.notice = error.localizedDescription
+            model.showMacFeedback(error.localizedDescription, at: target)
         }
         model.reload()
     }
@@ -354,8 +362,8 @@ struct MacSettingsPanel: View {
     @AppStorage("ui.theme") private var theme = "system"
     @AppStorage("mac.showMenuBarIcon") private var menuBarIcon = true
     @AppStorage("mac.playSyncSound") private var sound = false
-    @AppStorage("mac.shortcutKeyCode") private var keyCode = 9
-    @AppStorage("mac.shortcutModifiers") private var modifiers = 768
+    @AppStorage("mac.shortcutKeyCode") private var keyCode = MacMenuShortcut.defaultKeyCode
+    @AppStorage("mac.shortcutModifiers") private var modifiers = MacMenuShortcut.defaultModifiers
     @AppStorage("clipboard.captureAutomatically") private var capture = true
     @AppStorage("clipboard.sendAutomatically") private var send = true
     @AppStorage("clipboard.flushOnReconnect") private var flush = true
@@ -367,11 +375,11 @@ struct MacSettingsPanel: View {
     @AppStorage("mac.requireBiometrics") private var biometrics = false
     @AppStorage("mac.historyRetentionHours") private var retentionHours = 0
     @State private var credential = ""
+    @State private var testing = false
+    @State private var confirmRemove = false
     @State private var launches = false
     @State private var shortcutRecording = false
     @State private var shortcutMonitor: Any?
-    @State private var testing = false
-    @State private var confirmRemove = false
     @State private var confirmClear = false
     @State private var confirmCacheClear = false
     @State private var confirmRetention = false
@@ -402,7 +410,8 @@ struct MacSettingsPanel: View {
     private var general: some View {
         VStack(alignment: .leading, spacing: 0) {
             row("开机时启动", "登录后自动运行菜单栏应用") {
-                Toggle("开机时启动", isOn: Binding(get: { launches }, set: setLaunch)).labelsHidden().toggleStyle(.switch)
+                Toggle("开机时启动", isOn: Binding(get: { launches }, set: setLaunch))
+                    .labelsHidden().toggleStyle(.switch).macFeedbackTarget("settings.launch")
             }
             Divider()
             toggle("菜单栏图标", "在菜单栏常驻随贴图标", $menuBarIcon)
@@ -414,6 +423,13 @@ struct MacSettingsPanel: View {
                 Button(shortcutRecording ? "取消录制" : "录制新快捷键") {
                     if shortcutRecording { stopRecording() } else { recordShortcut() }
                 }
+                Button("Restore default shortcut") {
+                    stopRecording()
+                    keyCode = MacMenuShortcut.defaultKeyCode
+                    modifiers = MacMenuShortcut.defaultModifiers
+                }
+                .disabled(!shortcutRecording && keyCode == MacMenuShortcut.defaultKeyCode && modifiers == MacMenuShortcut.defaultModifiers)
+                .macFeedbackTarget("settings.shortcut")
             }
             Divider()
             row("语言", "设置界面语言") {
@@ -445,26 +461,34 @@ struct MacSettingsPanel: View {
             Divider()
             row("中继地址", "HTTPS") {
                 TextField("HTTPS address", text: $address).modifier(SettingsInputFocus()).frame(maxWidth: 235)
-                Button(testing ? "测试中…" : "测试连接") { Task { await testRelay() } }.disabled(testing)
+                Button(testing ? "测试中…" : "测试连接") { Task { await testRelay() } }
+                    .disabled(testing)
+                    .macFeedbackTarget("settings.testRelay")
             }
             Divider()
             row("中继凭证", "凭证保存在钥匙串") {
                 SecureField("Relay credential", text: $credential).modifier(SettingsInputFocus()).frame(maxWidth: 165)
                 Button("保存") {
-                    model.operation {
+                    model.macOperation(at: "settings.saveRelay", success: ClipRelayPreferences.localized("Saved")) {
                         _ = try Cloud(address, credential)
                         try RelayCredential.save(credential, address: address)
                         credential = ""
                     }
                 }.disabled(credential.isEmpty)
+                    .macFeedbackTarget("settings.saveRelay")
                 Button("移除", role: .destructive) { confirmRemove = true }
                     .foregroundStyle(.red)
+                    .macFeedbackTarget("settings.removeRelay")
             }
             Divider()
             toggle("断线自动同步", "连接恢复后重试待同步内容", $flush)
             Divider()
             row("手动同步", "立即检查各已配对设备") {
-                Button("立即同步") { Task { await model.syncConfigured() } }.disabled(model.busy || model.peers.isEmpty)
+                Button("立即同步") {
+                    Task { await model.syncConfigured(feedback: { model.showMacFeedback($0, at: "settings.syncNow") }) }
+                }
+                .disabled(model.busy || model.peers.isEmpty)
+                .macFeedbackTarget("settings.syncNow")
             }
         }
         .panelCard()
@@ -472,7 +496,7 @@ struct MacSettingsPanel: View {
         .alert("Remove relay credential?", isPresented: $confirmRemove) {
             Button("Cancel", role: .cancel) {}
             Button("Remove relay credential", role: .destructive) {
-                model.operation { try RelayCredential.remove(); relay = false; credential = "" }
+                model.macOperation(at: "settings.removeRelay") { try RelayCredential.remove(); relay = false; credential = "" }
             }
         }
     }
@@ -487,6 +511,7 @@ struct MacSettingsPanel: View {
                 row("生物识别解锁", "使用 Touch ID 解锁剪贴板历史") {
                     Toggle("生物识别解锁", isOn: Binding(get: { biometrics }, set: setBiometrics))
                         .toggleStyle(.switch).labelsHidden()
+                        .macFeedbackTarget("settings.biometrics")
                 }
                 Text("设备间使用 HPKE 加密。开启测试中继时，中继仅转发加密数据。")
                     .font(.callout).foregroundStyle(.secondary).padding(.top, 12)
@@ -517,10 +542,12 @@ struct MacSettingsPanel: View {
                 }
                 Divider()
                 row("History", "Manage local clipboard data") {
-                    Button("清理缓存", role: .destructive) { confirmCacheClear = true }.foregroundStyle(.red)
-                    Button("导出全部历史", action: exportHistory).disabled(exporting || model.library == nil)
+                    Button("清理缓存", role: .destructive) { confirmCacheClear = true }
+                        .foregroundStyle(.red).macFeedbackTarget("settings.clearCache")
+                    Button("导出全部历史", action: exportHistory)
+                        .disabled(exporting || model.library == nil).macFeedbackTarget("settings.export")
                     Button("清空全部历史", role: .destructive) { confirmClear = true }
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.red).macFeedbackTarget("settings.clearHistory")
                 }
             }
             ArchiveSettings(model: model)
@@ -530,13 +557,13 @@ struct MacSettingsPanel: View {
             Button("取消", role: .cancel) {}
             Button("清理缓存", role: .destructive) {
                 model.library?.clearReadCache()
-                model.notice = ClipRelayPreferences.localized("已清理读取缓存")
+                model.showMacFeedback(ClipRelayPreferences.localized("已清理读取缓存"), at: "settings.clearCache")
             }
         }
         .alert("清空全部历史？", isPresented: $confirmClear) {
             Button("取消", role: .cancel) {}
             Button("清空全部历史", role: .destructive) {
-                model.operation { try model.library?.clearHistory() }
+                model.macOperation(at: "settings.clearHistory") { try model.library?.clearHistory() }
             }
         } message: {
             Text("这会删除这台 Mac 的全部剪贴板历史和待发送条目，操作不可撤销。")
@@ -585,7 +612,7 @@ struct MacSettingsPanel: View {
             else { try SMAppService.mainApp.unregister() }
             launches = value
             if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
-        } catch { model.notice = error.localizedDescription }
+        } catch { model.showMacFeedback(error.localizedDescription, at: "settings.launch") }
     }
 
     private func setBiometrics(_ value: Bool) {
@@ -594,13 +621,14 @@ struct MacSettingsPanel: View {
                 do {
                     if try await LAContext().evaluatePolicy(.deviceOwnerAuthentication,
                         localizedReason: String(localized: "关闭剪贴板历史锁")) { biometrics = false }
-                } catch { model.notice = error.localizedDescription }
+                } catch { model.showMacFeedback(error.localizedDescription, at: "settings.biometrics") }
             }
             return
         }
         var error: NSError?
         guard LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            model.notice = error?.localizedDescription ?? ClipRelayPreferences.localized("Touch ID 不可用")
+            model.showMacFeedback(error?.localizedDescription ?? ClipRelayPreferences.localized("Touch ID 不可用"),
+                                  at: "settings.biometrics")
             return
         }
         biometrics = true
@@ -642,17 +670,18 @@ struct MacSettingsPanel: View {
     }
 
     private func testRelay() async {
-        guard let identity = model.transfer?.me else { return }
         testing = true
+        model.showMacFeedback("", at: "settings.testRelay")
         defer { testing = false }
         do {
+            guard let identity = model.transfer?.me else { throw RelayFailure.storage }
             let cloud = try Cloud(address, RelayCredential.read(address: address))
             let start = ContinuousClock.now
             _ = try await cloud.list(identity, nil)
             let elapsed = start.duration(to: .now).components
             let milliseconds = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
-            model.notice = String(localized: "中继连接正常 · \(milliseconds) 毫秒")
-        } catch { model.notice = error.localizedDescription }
+            model.showMacFeedback(String(localized: "中继连接正常 · \(milliseconds) 毫秒"), at: "settings.testRelay")
+        } catch { model.showMacFeedback(error.localizedDescription, at: "settings.testRelay") }
     }
 
     private func exportHistory() {
@@ -677,17 +706,17 @@ struct MacSettingsPanel: View {
                         }.joined(separator: "\n")
                         try Data(data.utf8).write(to: url, options: .atomic)
                     }.value
-                    model.notice = ClipRelayPreferences.localized("已导出历史")
-                } catch { model.notice = error.localizedDescription }
+                    model.showMacFeedback(ClipRelayPreferences.localized("已导出历史"), at: "settings.export")
+                } catch { model.showMacFeedback(error.localizedDescription, at: "settings.export") }
             }
         }
     }
 }
 
 struct MacAboutPanel: View {
+    @ObservedObject var model: Model
     @AppStorage("mac.lastUpdateCheck") private var lastCheck: Double = 0
     @State private var checking = false
-    @State private var status = ""
     private let project = URL(string: "https://github.com/keman5/cliprelay")!
     private var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
     private var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—" }
@@ -704,11 +733,10 @@ struct MacAboutPanel: View {
                     HStack {
                         Button { Task { await checkForUpdate() } } label: {
                             Label(checking ? "正在检查…" : "检查更新", systemImage: "arrow.clockwise")
-                        }.disabled(checking)
+                        }.disabled(checking).macFeedbackTarget("about.update")
                         Link(destination: project) { Label("项目主页", systemImage: "link") }
                             .buttonStyle(.bordered)
                     }.padding(.top, 4)
-                    if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
                 }.padding(.bottom, 6)
                 HStack(alignment: .top, spacing: 12) {
                     aboutCard("它做什么", "让自己的设备共用剪贴板历史。支持文本、链接、代码、图片、文档、PDF 与压缩包。")
@@ -742,10 +770,11 @@ struct MacAboutPanel: View {
             let release = try JSONDecoder().decode(Release.self, from: data)
             lastCheck = Date.now.timeIntervalSince1970
             let latest = release.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-            status = latest.compare(version, options: .numeric) == .orderedDescending
+            let message = latest.compare(version, options: .numeric) == .orderedDescending
                 ? String(localized: "发现新版本 \(latest)。请在项目主页查看。")
                 : String(localized: "已是最新版本")
-        } catch { status = error.localizedDescription }
+            model.showMacFeedback(message, at: "about.update")
+        } catch { model.showMacFeedback(error.localizedDescription, at: "about.update") }
     }
 }
 #endif

@@ -13,14 +13,23 @@ struct PeerAddress: View {
         DisclosureGroup("Local address") {
             TextField("192.168.1.2:52000", text: $value)
             Button("Save") {
-                model.operation {
-                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard trimmed.isEmpty || Exchange.localEndpoint(trimmed) != nil else { throw RelayFailure.invalid }
-                    try model.library?.setLANAddress(trimmed, peer: peer)
-                }
+                #if os(macOS)
+                model.macOperation(at: "device.address.\(peer.id)", success: ClipRelayPreferences.localized("Saved"), save)
+                #else
+                model.operation(save)
                 if model.notice.isEmpty { model.notice = ClipRelayPreferences.localized("Saved") }
+                #endif
             }
+            #if os(macOS)
+            .macFeedbackTarget("device.address.\(peer.id)")
+            #endif
         }.onAppear { value = (try? model.library?.lanAddress(peer)) ?? "" }
+    }
+
+    private func save() throws {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || Exchange.localEndpoint(trimmed) != nil else { throw RelayFailure.invalid }
+        try model.library?.setLANAddress(trimmed, peer: peer)
     }
 }
 
@@ -103,7 +112,11 @@ struct PairingSettings: View {
             Button("Cancel", role: .cancel) { pendingRemoval = nil }
             Button("Remove device", role: .destructive) {
                 pendingRemoval = nil
+                #if os(macOS)
+                model.macOperation(at: "pairing.remove.\(peer.id)") { try model.library?.unpair(peer) }
+                #else
                 model.operation { try model.library?.unpair(peer) }
+                #endif
             }
         } message: { peer in
             Text(peer.name)
@@ -127,6 +140,9 @@ struct PairingSettings: View {
                 Text(me.name)
                 fingerprint(me)
                 Button(card == nil ? "Show pairing code" : "Refresh pairing code", action: makeInvitation)
+                    #if os(macOS)
+                    .macFeedbackTarget("pairing.invitation")
+                    #endif
                 if approvalCode == nil, let card, card.expires > now, let value = try? card.code() {
                     if let peer = model.transfer?.pendingPairing() {
                         Text("Pairing request from \(peer.name)")
@@ -139,7 +155,7 @@ struct PairingSettings: View {
                         .textSelection(.enabled)
                     Text("Expires in \(seconds) s")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Copy pairing code") { copy(card.shortCode) }
+                    copyButton("Copy pairing code", value: card.shortCode, target: "pairing.copy.short")
                     if showInvitation {
                         QR(content: value).accessibilityLabel(Text("Pairing QR code"))
                     }
@@ -149,7 +165,7 @@ struct PairingSettings: View {
                             LabeledContent("Local address", value: address)
                                 .textSelection(.enabled)
                         }
-                        Button("Copy full invitation code") { copy(value) }
+                        copyButton("Copy full invitation code", value: value, target: "pairing.copy.invitation")
                     }
                     Button("Cancel invitation") {
                         self.card = nil
@@ -170,14 +186,20 @@ struct PairingSettings: View {
     }
 
     private func makeInvitation() {
-        model.operation {
-            guard let transfer = model.transfer else { throw RelayFailure.unavailable }
-            let invitation = try transfer.makePairingCard()
-            transfer.offerPairing(invitation)
-            card = invitation
-            approvalCode = nil
-            invitationStatus = nil
-        }
+        #if os(macOS)
+        model.macOperation(at: "pairing.invitation", prepareInvitation)
+        #else
+        model.operation(prepareInvitation)
+        #endif
+    }
+
+    private func prepareInvitation() throws {
+        guard let transfer = model.transfer else { throw RelayFailure.unavailable }
+        let invitation = try transfer.makePairingCard()
+        transfer.offerPairing(invitation)
+        card = invitation
+        approvalCode = nil
+        invitationStatus = nil
     }
 
     private var recipientControls: some View {
@@ -275,6 +297,9 @@ struct PairingSettings: View {
                         } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless)
                             .accessibilityLabel(Text("Remove device"))
+                            #if os(macOS)
+                            .macFeedbackTarget("pairing.remove.\(peer.id)")
+                            #endif
                     }
                 }
                 PeerAddress(model: model, peer: peer)
@@ -294,6 +319,7 @@ struct PairingSettings: View {
         }
     }
 
+
     private var directoryControls: some View {
         Section("Member directory") {
             #if os(macOS)
@@ -304,13 +330,20 @@ struct PairingSettings: View {
             Picker("Trusted directory", selection: Binding(
                 get: { (try? model.library?.directoryOwner()) ?? "" },
                 set: { id in
+                    #if os(macOS)
+                    model.macOperation(at: "pairing.directory") { try model.library?.chooseDirectory(id) }
+                    #else
                     model.operation { try model.library?.chooseDirectory(id) }
+                    #endif
                     Task { try? await model.transfer?.refreshDirectory(); model.reload() }
                 }
             )) {
                 Text("None").tag("")
                 ForEach(direct) { peer in Text(peer.name).tag(peer.id) }
             }
+            #if os(macOS)
+            .macFeedbackTarget("pairing.directory")
+            #endif
         }
     }
 
@@ -459,13 +492,22 @@ struct PairingSettings: View {
         Group {
             Text(caption)
             QR(content: value).accessibilityLabel(Text(caption))
-            Button("Copy full pairing code") { copy(value) }
+            copyButton("Copy full pairing code", value: value, target: "pairing.copy.full")
         }
     }
 
-    private func copy(_ value: String) {
-        model.operation { try systemCopy(.text(value)) }
-        if model.notice.isEmpty { model.notice = ClipRelayPreferences.localized("Copied") }
+    private func copyButton(_ title: LocalizedStringKey, value: String, target: String) -> some View {
+        Button(title) {
+            #if os(macOS)
+            model.macCopy(at: target) { try systemCopy(.text(value)) }
+            #else
+            model.operation { try systemCopy(.text(value)) }
+            if model.notice.isEmpty { model.notice = ClipRelayPreferences.localized("Copied") }
+            #endif
+        }
+        #if os(macOS)
+        .macFeedbackTarget(target)
+        #endif
     }
 
     private func fingerprint(_ peer: Peer) -> some View {

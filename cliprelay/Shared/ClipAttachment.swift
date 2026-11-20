@@ -36,7 +36,7 @@ struct ClipAttachment {
         }
     }
 
-    private static func symbol(for clip: Clip) -> String {
+    static func symbol(for clip: Clip) -> String {
         if clip.kind == "Image" { return "photo" }
         let ext = (clip.name as NSString).pathExtension.lowercased()
         let types = [UTType(clip.type), UTType(filenameExtension: ext)].compactMap { $0 }

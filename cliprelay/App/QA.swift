@@ -43,7 +43,9 @@ enum QA {
             try ClipArchive.export(source, password: backupPass, to: backup)
             #endif
             stage = "local connection"
-            let ex=Exchange(lib,me)
+            let localOnly = ProcessInfo.processInfo.environment["CLIPRELAY_QA_LOCAL_ONLY"] == "1"
+            let mode: Exchange.Mode = localOnly ? (sender ? .hub : .client) : .legacy
+            let ex = Exchange(lib, me, mode: mode)
             try ex.start(port:sender ? 48231:48232)
             try write("card",me.peer.code())
             try await wait {FileManager.default.fileExists(atPath:dir.appendingPathComponent("peer").path)}
@@ -63,66 +65,74 @@ enum QA {
             stage = "LAN text"
             let text=sender ? "Mac to simulator via LAN" : "Simulator to Mac via LAN"
             let opposite=sender ? "Simulator to Mac via LAN":"Mac to simulator via LAN"
-            try ex.queue(.text(text))
             for _ in 0..<12 { if ex.discovered().contains(peer.service) { break }; try await Task.sleep(nanoseconds:250_000_000) }
             let bonjour = ex.discovered().contains(peer.service)
             if !bonjour {
                 try lib.setLANAddress(sender ? "127.0.0.1:48232" : "127.0.0.1:48231", peer: peer)
             }
             try write("discovery",bonjour ? "Bonjour" : "simulator loopback")
-            guard try await ex.flush(to:peer,cloud:nil)==["LAN"] else {throw RelayFailure.invalid}
+            if localOnly {
+                stage = "Mac hub history"
+                let newest = "History before the client opened"
+                let privateClip = Clip.text("Burn after copy")
+                let fixtures = lanFixtures(origin: "Mac")
+                let file = Data("Copied file contents".utf8)
+                let image = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgiPr/HwAEEAJZs1E1mQAAAABJRU5ErkJggg==")!
+                if sender {
+                    #if os(macOS)
+                    try await recordClipboardFixtures(file: file, image: image, from: ex, in: dir)
+                    #endif
+                    let pinned = Clip.text(newest)
+                    try lib.save(pinned, source: "QA")
+                    try lib.pin(pinned.id.uuidString)
+                    try lib.save(privateClip, source: "QA")
+                    try lib.setBurn(privateClip.id.uuidString, true)
+                    for clip in fixtures { try lib.save(clip, source: "QA") }
+                    for index in 0..<32 { try lib.save(.text("Old history \(index)"), source: "QA") }
+                    guard try lib.usage().jobs == 0 else { throw RelayFailure.invalid }
+                    try write("hub-history", pinned.id.uuidString)
+                    try await wait { FileManager.default.fileExists(atPath: dir.appendingPathComponent("verified-first").path) }
+                    try lib.delete(pinned.id.uuidString)
+                    try lib.save(.text("New history"), source: "QA")
+                    try write("hub-updated", "ready")
+                    try await wait { FileManager.default.fileExists(atPath: dir.appendingPathComponent("verified-update").path) }
+                    guard try lib.usage().jobs == 0, try lib.recordCount(kind: "") == 39 else { throw RelayFailure.invalid }
+                } else {
+                    let local = Clip.text("Local phone history")
+                    try lib.save(local, source: "QA")
+                    try await wait { FileManager.default.fileExists(atPath: dir.appendingPathComponent("hub-history").path) }
+                    let pinnedID = try String(contentsOf: dir.appendingPathComponent("hub-history"), encoding: .utf8)
+                    try await ex.pullHistory(from: peer)
+                    let rows = try lib.page(pinnedFirst: true) + lib.page(offset: 30, pinnedFirst: true)
+                    guard rows.count == 39, rows.first?.id == pinnedID, rows.first?.fromHub == true,
+                          !rows.contains(where: { $0.name == privateClip.name }),
+                          let copied = rows.first(where: { $0.name == "Copied.txt" }),
+                          let screenshot = rows.first(where: { $0.name == "public.png" }),
+                          try lib.clip(copied.id).bytes == file, try lib.clip(screenshot.id).bytes == image,
+                          let binary = rows.first(where: { $0.name == "Mac.bin" }),
+                          try lib.clip(binary.id).bytes == fixtures.last?.bytes else { throw RelayFailure.invalid }
+                    try write("verified-first", "ready")
+                    try await wait { FileManager.default.fileExists(atPath: dir.appendingPathComponent("hub-updated").path) }
+                    try await ex.pullHistory(from: peer)
+                    try await ex.pullHistory(from: peer)
+                    guard try lib.recordCount(kind: "") == 39, try lib.page(pinnedFirst: true).first?.name == "New history",
+                          (try? lib.clip(pinnedID)) == nil, try lib.clip(local.id.uuidString).text == local.text,
+                          try lib.usage().jobs == 0 else { throw RelayFailure.invalid }
+                    try write("verified-update", "ready")
+                }
+                try testIntegrity(from: me, to: peer)
+                try write("result", "PASS Mac history pull, saved attachments, pinning, deletions, retries, integrity and archive")
+                return
+            }
+            try ex.queue(.text(text))
+            guard try await ex.flush(to: peer, cloud: nil) == ["LAN"] else { throw RelayFailure.invalid }
             try await wait {
                 guard let row = try lib.page().first(where: { $0.name == opposite && $0.source == peer.name }) else { return false }
                 return try lib.clip(row.id).text == opposite
             }
-            if ProcessInfo.processInfo.environment["CLIPRELAY_QA_LOCAL_ONLY"] == "1" {
-                stage = "LAN attachments"
-                let outgoing = lanFixtures(origin: sender ? "Mac" : "iOS")
-                for clip in outgoing { try ex.queue(clip) }
-                guard try await ex.flush(to: peer, cloud: nil) == Array(repeating: "LAN", count: outgoing.count),
-                      try lib.pendingIDs(peer).isEmpty else { throw RelayFailure.invalid }
-                let incoming = lanFixtures(origin: sender ? "iOS" : "Mac")
-                try await wait {
-                    let rows = try lib.page()
-                    return try incoming.allSatisfy { expected in
-                        guard let row = rows.first(where: { $0.name == expected.name && $0.source == peer.name }) else { return false }
-                        let clip = try lib.clip(row.id)
-                        return clip.type == expected.type && clip.bytes == expected.bytes && clip.plain == expected.plain
-                    }
-                }
-                stage = "Mac automatic clipboard sync"
-                let automaticFile = Data("Copied file contents".utf8)
-                // Use a different image so the copy is a new history entry.
-                let automaticImage = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgiPr/HwAEEAJZs1E1mQAAAABJRU5ErkJggg==")!
-                #if os(macOS)
-                try await sendClipboardFixtures(file: automaticFile, image: automaticImage, from: ex, in: dir)
-                #else
-                try await wait {
-                    let rows = try lib.page()
-                    guard let file = rows.first(where: { $0.name == "Copied.txt" && $0.kind == "File" }),
-                          let image = rows.first(where: { $0.name == "public.png" && $0.kind == "Image" }) else { return false }
-                    let fileDetails = ClipAttachment(try lib.clip(file.id))
-                    let imageDetails = ClipAttachment(try lib.clip(image.id))
-                    return try lib.clip(file.id).bytes == automaticFile && lib.clip(image.id).bytes == automaticImage
-                        && fileDetails.byteCount == automaticFile.count && imageDetails.thumbnail != nil
-                }
-                #endif
-                stage = "LAN clipboard pull"
-                let pulledText = "Clipboard queued while phone was away"
-                if sender {
-                    try lib.save(.text(pulledText), source: "QA", sendToPeers: true)
-                    try await wait { try lib.sharedSends(peer).isEmpty && lib.pendingIDs(peer).isEmpty }
-                } else {
-                    for _ in 0..<20 {
-                        if try await ex.pullLAN(from: peer) > 0 { break }
-                        try await Task.sleep(for: .milliseconds(250))
-                    }
-                    guard let row = try lib.page().first(where: { $0.name == pulledText && $0.source == peer.name }),
-                          try lib.clip(row.id).text == pulledText else { throw RelayFailure.invalid }
-                }
-                stage = "integrity"
+            if ProcessInfo.processInfo.environment["CLIPRELAY_QA_DUPLEX_ONLY"] == "1" {
                 try testIntegrity(from: me, to: peer)
-                try write("result", "PASS LAN automatic clipboard sync and pull, duplex text, rich text, PNG and 10 MB files, integrity, pagination and archive")
+                try write("result", "PASS direct duplex, integrity, pagination and archive")
                 return
             }
             stage = "cloud configuration"
@@ -162,7 +172,7 @@ enum QA {
         } catch {try? write("result","FAIL "+stage+" · "+String(describing:error))}
     }
     #if os(macOS)
-    @MainActor private static func sendClipboardFixtures(file: Data, image: Data, from exchange: Exchange, in dir: URL) async throws {
+    @MainActor private static func recordClipboardFixtures(file: Data, image: Data, from exchange: Exchange, in dir: URL) async throws {
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
         let fileURL = dir.appendingPathComponent("Copied.txt")
@@ -172,8 +182,7 @@ enum QA {
         guard board.writeObjects([fileURL as NSURL, item]) else { throw RelayFailure.invalid }
         let model = Model()
         model.transfer = exchange
-        try model.recordClipboardCopies(in: board, source: "QA", sendToPeers: true)
-        await model.sync(nil, quietly: true)
+        try model.recordClipboardCopies(in: board, source: "QA")
     }
     #endif
     private static func testIntegrity(from identity: Identity, to peer: Peer) throws {

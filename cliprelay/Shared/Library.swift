@@ -16,6 +16,13 @@ struct Summary: Identifiable {
     var received: Bool? = nil
     var lastCopied: Date? = nil
     var historyRank: Int64 = 0
+    var fromHub = false
+}
+
+struct HubHistoryEntry: Codable, Equatable {
+    let id: UUID
+    let pinned: Bool
+    let expires: Date?
 }
 
 struct SavedPhrase: Identifiable, Codable, Equatable {
@@ -56,6 +63,8 @@ final class Library {
         sqlite3_busy_timeout(db, 3000)
         guard sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS clips(id TEXT PRIMARY KEY, name TEXT, kind TEXT, source TEXT, pinned INTEGER DEFAULT 0, data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS peers(id TEXT PRIMARY KEY, card BLOB NOT NULL); CREATE TABLE IF NOT EXISTS pending(id TEXT,peer TEXT,wire BLOB NOT NULL,PRIMARY KEY(id,peer)); CREATE TABLE IF NOT EXISTS forward(id TEXT, origin TEXT, peer TEXT, wire BLOB NOT NULL, PRIMARY KEY(id,origin,peer));",nil,nil,nil)==SQLITE_OK else { throw RelayFailure.storage }
         try run("CREATE TABLE IF NOT EXISTS share_send(id TEXT, peer TEXT, PRIMARY KEY(id, peer))")
+        try run("CREATE TABLE IF NOT EXISTS hub_history(hub TEXT, id TEXT, position INTEGER NOT NULL, PRIMARY KEY(hub,id))")
+        try run("CREATE INDEX IF NOT EXISTS hub_history_items ON hub_history(id,position)")
         try run("CREATE TABLE IF NOT EXISTS pairing_dates(peer TEXT PRIMARY KEY, date REAL NOT NULL)")
         try run("CREATE TRIGGER IF NOT EXISTS save_pairing_date AFTER INSERT ON peers BEGIN INSERT OR IGNORE INTO pairing_dates VALUES(NEW.id, unixepoch()); END")
         try run("CREATE TRIGGER IF NOT EXISTS remove_pairing_date AFTER DELETE ON peers BEGIN DELETE FROM pairing_dates WHERE peer=OLD.id; END")
@@ -239,7 +248,7 @@ final class Library {
             for clip in clips {
                 try clip.validate()
                 let key = contentKey(clip)
-                let previous = try query("SELECT id FROM clips WHERE content_key=? AND (expires IS NULL OR expires > unixepoch()) ORDER BY pinned DESC,rowid DESC LIMIT 1", [.text(key)]) {
+                let previous = try query("SELECT id FROM clips WHERE content_key=? AND (expires IS NULL OR expires > unixepoch()) AND id NOT IN (SELECT id FROM hub_history) ORDER BY pinned DESC,rowid DESC LIMIT 1", [.text(key)]) {
                     self.string($0, 0)
                 }.first
                 let id = previous ?? clip.id.uuidString
@@ -265,12 +274,13 @@ final class Library {
     }
 
     private func prune(protecting saved: Set<String>) throws {
-        try run("DELETE FROM clips WHERE pinned=0 AND rowid NOT IN (SELECT rowid FROM clips ORDER BY rowid DESC LIMIT 1000) AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)")
-        var size = try usage().historyBytes
+        try run("DELETE FROM clips WHERE pinned=0 AND id NOT IN (SELECT id FROM hub_history) AND rowid NOT IN (SELECT rowid FROM clips WHERE id NOT IN (SELECT id FROM hub_history) ORDER BY rowid DESC LIMIT 1000) AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)")
+        var size = try query("SELECT COALESCE(SUM(length(data)),0) FROM clips WHERE id NOT IN (SELECT id FROM hub_history)") { sqlite3_column_int64($0, 0) }.first ?? 0
         guard size > 160_000_000 else { return }
         let removable = try query("""
             SELECT id,length(data) FROM clips WHERE pinned=0
             AND id NOT IN (SELECT id FROM pending) AND id NOT IN (SELECT id FROM share_send)
+            AND id NOT IN (SELECT id FROM hub_history)
             ORDER BY rowid
             """) { (self.string($0, 0), sqlite3_column_int64($0, 1)) }
         for (id, bytes) in removable where !saved.contains(id) {
@@ -303,7 +313,7 @@ final class Library {
             cachedPages.append(hit)
             return hit.rows
         }
-        let order = pinnedFirst ? "pinned DESC, rowid DESC" : "rowid DESC"
+        let order = (pinnedFirst ? "pinned DESC, " : "") + "(SELECT MAX(position) FROM hub_history WHERE id=clips.id) DESC, rowid DESC"
         let rows = try query("SELECT \(Self.summaryColumns) FROM clips WHERE (?='' OR kind=? OR (?='Pinned' AND pinned=1)) AND instr(lower(name),lower(?))>0 ORDER BY \(order) LIMIT 30 OFFSET CAST(? AS INTEGER)",[.text(kind),.text(kind),.text(kind),.text(search),.text(String(key.offset))]) { s in
             self.summary(s)
         }
@@ -311,7 +321,7 @@ final class Library {
         cachedPages.append((key, rows))
         return rows
     }
-    private static let summaryColumns = "id,name,kind,source,pinned,captured,uti,burn,expires,shared,expiry_seconds,received,last_copied,rowid"
+    private static let summaryColumns = "id,name,kind,source,pinned,captured,uti,burn,expires,shared,expiry_seconds,received,last_copied,rowid,EXISTS(SELECT 1 FROM hub_history WHERE id=clips.id)"
 
     private func summary(_ statement: OpaquePointer) -> Summary {
         func date(_ column: Int32) -> Date? {
@@ -325,7 +335,87 @@ final class Library {
                        expirySeconds: sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : sqlite3_column_double(statement, 10),
                        localOnly: sqlite3_column_int(statement, 9) == 0,
                        received: sqlite3_column_type(statement, 11) == SQLITE_NULL ? nil : sqlite3_column_int(statement, 11) != 0,
-                       lastCopied: date(12), historyRank: sqlite3_column_int64(statement, 13))
+                       lastCopied: date(12), historyRank: sqlite3_column_int64(statement, 13),
+                       fromHub: sqlite3_column_int(statement, 14) != 0)
+    }
+
+    func hubHistory() throws -> [HubHistoryEntry] {
+        lock.lock(); defer { lock.unlock() }
+        try purgeExpired()
+        let entries = try query("SELECT id,pinned,expires FROM clips WHERE burn=0 ORDER BY pinned DESC,rowid DESC") { row in
+            let expires = sqlite3_column_type(row, 2) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(row, 2))
+            return UUID(uuidString: self.string(row, 0)).map {
+                HubHistoryEntry(id: $0, pinned: sqlite3_column_int(row, 1) != 0, expires: expires)
+            }
+        }
+        return entries.compactMap { $0 }
+    }
+
+    func hubClip(_ id: UUID) throws -> Clip {
+        let data = try query("SELECT data FROM clips WHERE id=? AND burn=0 AND (expires IS NULL OR expires > unixepoch())", [.text(id.uuidString)]) { self.blob($0, 0) }.first
+        guard let data else { throw RelayFailure.unavailable }
+        return try Codec.read(Clip.self, data)
+    }
+
+    func existingHistoryIDs() throws -> Set<String> {
+        Set(try query("SELECT id FROM clips") { self.string($0, 0) })
+    }
+
+    func cacheHubClip(_ clip: Clip, entry: HubHistoryEntry, from hub: Peer) throws {
+        lock.lock(); defer { lock.unlock() }
+        try run("BEGIN IMMEDIATE")
+        do {
+            guard try directPeers().contains(where: { $0.id == hub.id }) else { throw RelayFailure.unauthorized }
+            let id = clip.id.uuidString
+            if try query("SELECT 1 FROM clips WHERE id=?", [.text(id)], { _ in true }).isEmpty {
+                try clip.validate()
+                try insert(clip, source: hub.name, pinned: entry.pinned, key: contentKey(clip), received: true)
+                try run("INSERT INTO hub_history VALUES(?,?,0)", [.text(hub.id), .text(id)])
+                try updateHubMetadata(entry)
+            }
+            try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    func applyHubHistory(_ history: [HubHistoryEntry], from hub: Peer) throws {
+        lock.lock(); defer { lock.unlock() }
+        try run("BEGIN IMMEDIATE")
+        do {
+            guard try directPeers().contains(where: { $0.id == hub.id }) else { throw RelayFailure.unauthorized }
+            let positions = try query("SELECT id,position FROM hub_history WHERE hub=?", [.text(hub.id)]) {
+                (self.string($0, 0), sqlite3_column_int64($0, 1))
+            }
+            let previous = Dictionary(uniqueKeysWithValues: positions)
+            let requested = Set(history.map { $0.id.uuidString })
+            for id in previous.keys where !requested.contains(id) { try removeHubCopy(id, from: hub) }
+            for (index, entry) in history.enumerated() {
+                let id = entry.id.uuidString
+                let position = Int64(history.count - index)
+                if previous[id] != position {
+                    try run("""
+                        INSERT OR REPLACE INTO hub_history SELECT ?,id,CAST(? AS INTEGER) FROM clips
+                        WHERE id=? AND received=1
+                        """, [.text(hub.id), .text(String(position)), .text(id)])
+                }
+                try updateHubMetadata(entry)
+            }
+            try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    private func updateHubMetadata(_ entry: HubHistoryEntry) throws {
+        let pinned = entry.pinned ? "1" : "0"
+        let expires = entry.expires.map { String($0.timeIntervalSince1970) } ?? ""
+        try run("""
+            UPDATE clips SET pinned=CAST(? AS INTEGER),expires=CAST(NULLIF(?,'') AS REAL)
+            WHERE id=? AND id IN (SELECT id FROM hub_history)
+            AND (pinned IS NOT CAST(? AS INTEGER) OR expires IS NOT CAST(NULLIF(?,'') AS REAL))
+            """, [.text(pinned), .text(expires), .text(entry.id.uuidString), .text(pinned), .text(expires)])
+    }
+
+    private func removeHubCopy(_ id: String, from hub: Peer) throws {
+        try run("DELETE FROM hub_history WHERE hub=? AND id=?", [.text(hub.id), .text(id)])
+        try run("DELETE FROM clips WHERE id=? AND received=1 AND id NOT IN (SELECT id FROM hub_history)", [.text(id)])
     }
 
     #if os(macOS)
@@ -524,6 +614,7 @@ final class Library {
 
     private func removeClip(_ id: String) throws {
         try run("DELETE FROM clips WHERE id=?", [.text(id)])
+        try run("DELETE FROM hub_history WHERE id=?", [.text(id)])
         try run("DELETE FROM share_send WHERE id=?", [.text(id)])
         try run("DELETE FROM pending WHERE id=?", [.text(id)])
         try run("DELETE FROM forward WHERE id=?", [.text(id)])
@@ -607,6 +698,8 @@ final class Library {
         lock.lock(); defer {lock.unlock()}
         try run("BEGIN IMMEDIATE")
         do {
+            let copies = try query("SELECT id FROM hub_history WHERE hub=?", [.text(peer.id)]) { self.string($0, 0) }
+            for id in copies { try removeHubCopy(id, from: peer) }
             try run("DELETE FROM peers WHERE id=?",[.text(peer.id)])
             try run("DELETE FROM lan_addresses WHERE peer=?", [.text(peer.id)])
             if try directoryOwner() == peer.id {

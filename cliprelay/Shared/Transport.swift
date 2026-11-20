@@ -5,8 +5,20 @@ import Darwin
 import dnssd
 
 final class Exchange {
+    enum Mode { case legacy, hub, client }
+
+    private struct HistoryRequest: Codable {
+        let nonce: UUID
+        var id: UUID?
+    }
+    private struct HistoryResponse<Value: Codable>: Codable {
+        let nonce: UUID
+        let value: Value
+    }
+
     let library: Library
     let me: Identity
+    private let mode: Mode
     private var listener: NWListener?
     private var advertisement: NetService?
     private var browser: NWBrowser?
@@ -28,7 +40,7 @@ final class Exchange {
         let wire: Data
     }
     var didReceive: (() -> Void)?
-    init(_ library: Library, _ me: Identity, forwardingAllowed: @escaping () -> Bool = {
+    init(_ library: Library, _ me: Identity, mode: Mode = .legacy, forwardingAllowed: @escaping () -> Bool = {
         #if os(macOS)
         UserDefaults.standard.bool(forKey: "relay.lanForwarding")
         #else
@@ -43,6 +55,7 @@ final class Exchange {
     }) {
         self.library = library
         self.me = me
+        self.mode = mode
         self.forwardingAllowed = forwardingAllowed
         self.directoryAllowed = directoryAllowed
     }
@@ -315,6 +328,19 @@ final class Exchange {
     }
     private func receiveLAN(_ wire: Data) throws -> Data {
         let envelope = try Codec.read(Envelope.self, wire)
+        if mode == .hub {
+            guard wire.count < 4096 else { throw RelayFailure.invalid }
+            let (body, peer) = try envelope.open(me, peers: library.directPeers(), purpose: "history-request")
+            let request = try Codec.read(HistoryRequest.self, body)
+            let response: Data
+            if let id = request.id {
+                response = try Codec.pack(HistoryResponse(nonce: request.nonce, value: library.hubClip(id)))
+            } else {
+                response = try Codec.pack(HistoryResponse(nonce: request.nonce, value: library.hubHistory()))
+            }
+            return try Envelope.seal(response, from: me, to: peer, purpose: "history-response")
+        }
+        guard mode == .legacy else { throw RelayFailure.unauthorized }
         if wire.count < 4096, directoryAllowed(),
            let (data, requester) = try? envelope.open(me, peers: library.directPeers(), purpose: "directory-request"),
            let nonce = UUID(uuidString: String(decoding: data, as: UTF8.self)) {
@@ -430,6 +456,36 @@ final class Exchange {
         try await sendLAN(Envelope.seal(receipt, from: me, to: peer, purpose: "lan-pull-ack"),
                           id: String(decoding: receipt, as: UTF8.self), to: peer, at: endpoint, purpose: "lan-pull-done")
         return 30
+    }
+
+    func pullHistory(from hub: Peer) async throws {
+        guard try library.directPeers().contains(where: { $0.id == hub.id }) else { throw RelayFailure.unauthorized }
+        // The first refresh can run before Bonjour publishes its initial results.
+        if endpoint(for: hub) == nil { try await Task.sleep(for: .seconds(1)) }
+        guard let endpoint = endpoint(for: hub) else { throw RelayFailure.unavailable }
+
+        func request<Value: Codable>(_ type: Value.Type, id: UUID? = nil) async throws -> Value {
+            try Task.checkCancellation()
+            let request = HistoryRequest(nonce: UUID(), id: id)
+            let wire = try Envelope.seal(Codec.pack(request), from: me, to: hub, purpose: "history-request")
+            let reply = try await exchange(wire, endpoint: endpoint, pairing: false, timeout: id == nil ? 3 : 8)
+            try Task.checkCancellation()
+            let (body, _) = try Codec.read(Envelope.self, reply).open(me, peers: [hub], purpose: "history-response")
+            let response = try Codec.read(HistoryResponse<Value>.self, body)
+            guard response.nonce == request.nonce else { throw RelayFailure.unauthorized }
+            return response.value
+        }
+
+        let history = try await request([HubHistoryEntry].self)
+        let ids = Set(history.map(\.id))
+        guard ids.count == history.count else { throw RelayFailure.invalid }
+        let cached = try library.existingHistoryIDs()
+        for entry in history where !cached.contains(entry.id.uuidString) {
+            let clip = try await request(Clip.self, id: entry.id)
+            guard clip.id == entry.id else { throw RelayFailure.invalid }
+            try library.cacheHubClip(clip, entry: entry, from: hub)
+        }
+        try library.applyHubHistory(history, from: hub)
     }
     private func exchange(_ wire: Data, endpoint: NWEndpoint, pairing: Bool, timeout: TimeInterval) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in

@@ -437,7 +437,7 @@ final class Keyboard: UIInputViewController {
             let pinAction: (Keyboard) -> Void = { k in
                 k.change { try k.library?.pin(record.id); k.page = 0; k.listOffset = .zero }
             }
-            let wrapper = swipeCard(card, first: ("Add phrase","text.badge.plus",addPhrase),
+            let wrapper = record.fromHub ? nil : swipeCard(card, first: ("Add phrase","text.badge.plus",addPhrase),
                 pin: (pinTitle, pinSymbol), canAdd: ["Text","Rich text"].contains(record.kind),
                 pinAction: pinAction,
                 delete: { k in k.change { try k.library?.delete(record.id) } })
@@ -448,10 +448,14 @@ final class Keyboard: UIInputViewController {
                 }
                 let words = action("Split words", "character.textbox") { k in k.splitText = text; k.render() }
                 add.isEnabled = text != nil; words.isEnabled = text != nil
-                let remove = action("Delete", "trash") { [weak wrapper] _ in wrapper?.askDelete() }
-                addActions([add, words, action(pinTitle, pinSymbol, pinAction), remove], to: card)
+                if let wrapper {
+                    let remove = action("Delete", "trash") { [weak wrapper] _ in wrapper?.askDelete() }
+                    addActions([add, words, action(pinTitle, pinSymbol, pinAction), remove], to: card)
+                } else {
+                    addActions([add, words], to: card)
+                }
             }
-            lines.addArrangedSubview(wrapper)
+            lines.addArrangedSubview(wrapper ?? card as UIView)
         }
         for phrase in saved {
             let id = phrase.id.uuidString

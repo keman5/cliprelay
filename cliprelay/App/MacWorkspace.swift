@@ -22,6 +22,7 @@ struct MacPalette {
     var muted: Color { color(0x9CA3AF, 0x6B7280) }
     var accent: Color { color(0x0066FF, 0x2E9BFF) }
     var accentSoft: Color { color(0xEAF2FF, 0x162A4A) }
+    var toast: Color { color(0xFFFFFF, 0x454C58) }
 }
 
 struct MacWorkspace: View {
@@ -56,7 +57,6 @@ struct MacWorkspace: View {
     @ObservedObject var model: Model
     @State private var page: Page
     @State private var keyboardNavigation = false
-    @AppStorage("clipboard.captureAutomatically") private var automaticCapture = true
     @AppStorage("clipboard.sendAutomatically") private var automaticSend = true
     @Environment(\.colorScheme) private var scheme
     private var palette: MacPalette { MacPalette(scheme) }
@@ -74,22 +74,8 @@ struct MacWorkspace: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(palette.surface)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !model.notice.isEmpty {
-                Text(model.notice)
-                    .font(.caption)
-                    .foregroundStyle(palette.secondary)
-                    .padding(.vertical, 5)
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(palette.raised)
-                    .overlay(alignment: .top) { Rectangle().fill(palette.divider).frame(height: 1) }
-            }
-        }
         .frame(minWidth: 860, minHeight: 520)
-        .overlay(alignment: .bottom) {
-            if page == .history, model.copyToast != nil { MacCopyToast() }
-        }
+        .macFeedbackOverlay(model.macFeedback, copyConfirmation: model.macCopyConfirmation)
         .tint(palette.accent)
         .focusEffectDisabled(!keyboardNavigation)
         .background(MacWorkspaceFocus(keyboardNavigation: $keyboardNavigation))
@@ -101,6 +87,7 @@ struct MacWorkspace: View {
                 VStack(alignment: .leading, spacing: 2) {
                     heading("Menu")
                     item(.history, count: (try? model.library?.recordCount(kind: "")) ?? model.rows.count)
+                        .macFeedbackTarget("workspace.history")
                     heading("Manage")
                     item(.devices, count: model.peers.count)
                     heading("Settings")
@@ -113,7 +100,6 @@ struct MacWorkspace: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .font(.system(size: 12, weight: .semibold))
-                    .disabled(!automaticCapture)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.macLANConnected ? "Connected · Local Network Bonjour" : "Offline · On This Mac")
                     Text("HPKE end-to-end encryption")
@@ -177,7 +163,7 @@ struct MacWorkspace: View {
         case .sync: MacSettingsPanel(model: model, group: .sync)
         case .privacy: MacSettingsPanel(model: model, group: .privacy)
         case .storage: MacSettingsPanel(model: model, group: .storage)
-        case .about: MacAboutPanel()
+        case .about: MacAboutPanel(model: model)
         }
     }
 }

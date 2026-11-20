@@ -62,9 +62,9 @@ struct ArchiveSettings: View {
                     do {
                         contents = try await Task.detached { try ClipArchive.read(url, password: secret) }.value
                         confirm = true
-                    } catch { model.notice = error.localizedDescription }
+                    } catch { report(error.localizedDescription, creating: false) }
                 }
-            } catch { model.notice = error.localizedDescription }
+            } catch { report(error.localizedDescription, creating: false) }
         }
     }
 
@@ -74,7 +74,13 @@ struct ArchiveSettings: View {
 
     @ViewBuilder private var backupActions: some View {
         Button("Create encrypted backup", action: export).disabled(working || password.isEmpty)
+            #if os(macOS)
+            .macFeedbackTarget("backup.export")
+            #endif
         Button("Import encrypted backup") { picking = true }.disabled(working || password.isEmpty)
+            #if os(macOS)
+            .macFeedbackTarget("backup.import")
+            #endif
     }
 
     private func shareBackup(_ url: URL) -> some View {
@@ -110,8 +116,16 @@ struct ArchiveSettings: View {
                 }.value
                 if let exportURL { try? FileManager.default.removeItem(at: exportURL.deletingLastPathComponent()) }
                 exportURL = newURL
-            } catch { model.notice = error.localizedDescription }
+            } catch { report(error.localizedDescription, creating: true) }
         }
+    }
+
+    private func report(_ message: String, creating: Bool) {
+        #if os(macOS)
+        model.showMacFeedback(message, at: creating ? "backup.export" : "backup.import")
+        #else
+        model.notice = message
+        #endif
     }
 
     private func commit() {
@@ -124,9 +138,9 @@ struct ArchiveSettings: View {
                 let count = try await Task.detached {
                     try library.importArchive(contents.records.map { ($0.clip, $0.source, $0.pinned) }, phrases: contents.phrases)
                 }.value
-                model.notice = String(localized: "Imported \(count) records")
+                report(String(localized: "Imported \(count) records"), creating: false)
                 model.reload()
-            } catch { model.notice = error.localizedDescription }
+            } catch { report(error.localizedDescription, creating: false) }
         }
     }
 }

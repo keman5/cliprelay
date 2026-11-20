@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import Carbon
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -73,30 +74,22 @@ extension Summary {
 
 struct MacHistorySession {
     private(set) var rows: [Summary] = []
-    private var copyRanks: [String: Int64] = [:]
 
     mutating func update(_ latest: [Summary]) {
-        let previous = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
-        let currentIDs = Set(latest.map(\.id))
-        copyRanks = copyRanks.filter { currentIDs.contains($0.key) }
-        for row in latest {
-            guard let old = previous[row.id], row.historyRank != old.historyRank else { continue }
-            if row.lastCopied != old.lastCopied {
-                // Keep the rank from before the first copy in this presentation.
-                copyRanks[row.id] = copyRanks[row.id] ?? old.historyRank
-            } else {
-                copyRanks.removeValue(forKey: row.id)
-            }
-        }
         rows = ordered(latest)
     }
 
-    func ordered(_ rows: [Summary]) -> [Summary] {
-        rows.sorted { first, second in
+    func ordered(_ latest: [Summary]) -> [Summary] {
+        let previous = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        return latest.map { latestRow in
+            guard let old = previous[latestRow.id] else { return latestRow }
+            var row = latestRow
+            row.historyRank = old.historyRank
+            row.lastCopied = old.lastCopied
+            return row
+        }.sorted { first, second in
             if first.pinned != second.pinned { return first.pinned }
-            let firstRank = copyRanks[first.id] ?? first.historyRank
-            let secondRank = copyRanks[second.id] ?? second.historyRank
-            return firstRank > secondRank
+            return first.historyRank > second.historyRank
         }
     }
 }
@@ -163,7 +156,9 @@ struct MacHistory: View {
             Group {
                 if let selected {
                     MacClipDetail(model: model, row: selected, sourceName: source(for: selected).title,
-                                  sourceApplication: source(for: selected) == .thisMac && selected.source != "Local" ? selected.source : nil).id(selected.id)
+                                  sourceApplication: source(for: selected) == .thisMac && selected.source != "Local" ? selected.source : nil,
+                                  deleteShortcutEnabled: !batch && filter == nil && focused != .search)
+                        .id(selected.id)
                 } else {
                     Text("Select an item to view its details").foregroundStyle(palette.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -193,6 +188,7 @@ struct MacHistory: View {
                     .textFieldStyle(.plain)
                     .focused($focused, equals: .search)
                     .accessibilityIdentifier("mac.history.search")
+                    .macFeedbackTarget("history.search")
                 if !query.isEmpty {
                     Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(palette.muted).accessibilityLabel("Clear search")
@@ -320,17 +316,18 @@ struct MacHistory: View {
                         Button { activate(row) } label: { rowLabel(row) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("mac.history.row.\(row.id)")
+                            .macFeedbackTarget("history.row.\(row.id)")
                             .accessibilityAddTraits(selected?.id == row.id ? .isSelected : [])
                             .contextMenu {
                                 Button("View details") { selection = row.id }
-                                Button("Copy") { model.copy(row) }
+                                Button("Copy") { model.macCopy(row, at: "history.row.\(row.id)") }
                             }
                             .id(row.id)
                     }
                 }
                 .padding(8)
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.never)
             .focusable()
             .focused($focused, equals: .list)
             .onKeyPress(.downArrow) { move(1) }
@@ -380,22 +377,24 @@ struct MacHistory: View {
         HStack(spacing: 8) {
             Text("\(checked.count) selected").foregroundStyle(palette.secondary)
             Button("Pin") {
-                model.operation { try model.library?.setPinned(checked) }
-                if model.notice.isEmpty { finishBatch() }
-            }.disabled(checked.isEmpty)
+                let pinned = model.macOperation(at: "history.batch.pin") { try model.library?.setPinned(checked) }
+                if pinned { finishBatch() }
+            }.disabled(checked.isEmpty).macFeedbackTarget("history.batch.pin")
             Button("Delete", role: .destructive) { confirming = true }
                 .foregroundStyle(.red)
                 .disabled(checked.isEmpty)
+                .macFeedbackTarget("history.batch.delete")
             Button("Done") { finishBatch() }
             Spacer()
         }
         .font(.system(size: 12)).padding(8)
         .background(palette.accentSoft)
+        .background(MacDeleteShortcut(enabled: !checked.isEmpty && filter == nil && focused != .search) { confirming = true })
         .alert("Confirm deletion of \(checked.count) items", isPresented: $confirming) {
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("Delete", role: .destructive) {
-                model.operation { try model.library?.deleteClips(checked) }
-                if model.notice.isEmpty { finishBatch() }
+                let deleted = model.macOperation(at: "history.batch.delete") { try model.library?.deleteClips(checked) }
+                if deleted { finishBatch() }
             }
         }
     }
@@ -410,7 +409,7 @@ struct MacHistory: View {
         selection = row.id
         if batch {
             if !checked.insert(row.id).inserted { checked.remove(row.id) }
-        } else { model.copy(row) }
+        } else { model.macCopy(row, at: "history.row.\(row.id)") }
     }
 
     private func finishBatch() {
@@ -433,12 +432,12 @@ struct MacHistory: View {
             checked.formIntersection(Set(latest.map(\.id)))
             sources.formIntersection(Set(latest.map(source(for:))))
             search()
-        } catch { model.notice = error.localizedDescription }
+        } catch { model.showMacFeedback(error.localizedDescription, at: "history.search") }
     }
 
     private func search() {
         do { matches = query.isEmpty ? [] : history.ordered(try model.library?.macHistory(search: query) ?? []) }
-        catch { model.notice = error.localizedDescription }
+        catch { model.showMacFeedback(error.localizedDescription, at: "history.search") }
     }
 }
 
@@ -460,8 +459,7 @@ struct MacClipStatus: View {
     var body: some View {
         HStack(spacing: 4) {
             if row.pinned { status("pin", color: .orange, label: "Pinned") }
-            if row.burn { status("flame", color: .red, label: "Burn after paste") }
-            if row.localOnly { status("clock", color: .orange, label: "On this Mac · Not synced") }
+            if row.burn { status("flame", color: .red, label: "Burn after copy") }
         }
     }
 
@@ -475,16 +473,33 @@ struct MacClipStatus: View {
 }
 
 struct MacCopyToast: View {
+    var animateCheck = false
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var bounce = false
+
     var body: some View {
-        Label("Copied", systemImage: "checkmark.circle.fill")
+        Label {
+            Text("Copied")
+        } icon: {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                .symbolEffect(.bounce.up, value: bounce)
+        }
             .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(MacPalette(scheme).text)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.regularMaterial, in: Capsule())
-            .overlay { Capsule().strokeBorder(.secondary.opacity(0.22)) }
+            .background(MacPalette(scheme).toast, in: Capsule())
+            .overlay { Capsule().strokeBorder(.secondary.opacity(0.25)) }
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-            .padding(.bottom, 12)
             .allowsHitTesting(false)
+            .accessibilityIdentifier("mac.history.copy-toast")
+            .task {
+                guard animateCheck, !reduceMotion else { return }
+                // Let the symbol render once before triggering its discrete effect.
+                do { try await Task.sleep(for: .milliseconds(35)) } catch { return }
+                bounce = true
+            }
     }
 }
 
@@ -492,38 +507,70 @@ struct MacClipComposer: View {
     @ObservedObject var model: Model
     var compact = false
     @Environment(\.colorScheme) private var scheme
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @State private var draft = ""
+    @State private var pastedClips: [Clip] = []
     @State private var importing = false
     private var palette: MacPalette { MacPalette(scheme) }
+    private var hasContent: Bool { !draft.isEmpty || !pastedClips.isEmpty }
 
     var body: some View {
         HStack(spacing: 8) {
-            TextField("Type or paste content and press Return…", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain).lineLimit(1...3)
-                .padding(.horizontal, 11).padding(.vertical, 7)
-                .frame(minHeight: 38)
-                .background(palette.surface, in: RoundedRectangle(cornerRadius: 11))
-                .overlay { RoundedRectangle(cornerRadius: 11).strokeBorder(focused ? palette.accent : palette.line) }
-                .focused($focused)
-                .onKeyPress(keys: [.return]) { press in
-                    guard !press.modifiers.contains(.shift), !draft.isEmpty else { return .ignored }
-                    add()
-                    return .handled
+            VStack(alignment: .leading, spacing: 5) {
+                if !pastedClips.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 5) {
+                            ForEach(pastedClips) { clip in
+                                let title = clip.name == clip.type ? UTType(clip.type)?.localizedDescription ?? clip.name : clip.name
+                                HStack(spacing: 5) {
+                                    Image(systemName: ClipAttachment.symbol(for: clip)).accessibilityHidden(true)
+                                    Text(title).lineLimit(1).truncationMode(.middle).frame(maxWidth: 150)
+                                    Button {
+                                        pastedClips.removeAll { $0.id == clip.id }
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(Text("Remove"))
+                                    .accessibilityValue(Text(title))
+                                }
+                                .padding(.horizontal, 7).padding(.vertical, 4)
+                                .background(palette.raised, in: Capsule())
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
                 }
-                .onExitCommand { focused = false }
-                .accessibilityIdentifier("mac.history.composer")
-            Button { add() } label: {
+                MacComposerEditor(text: $draft, focused: $focused, paste: stagePaste, submit: add)
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty && pastedClips.isEmpty {
+                            Text("Type or paste content and press Return…")
+                                .foregroundStyle(palette.muted).lineLimit(1)
+                                .allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
+            }
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .frame(minHeight: 38)
+            .background(palette.surface, in: RoundedRectangle(cornerRadius: 11))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11).strokeBorder(focused ? palette.accent : palette.line)
+                    .allowsHitTesting(false)
+            }
+            Button { add(draft) } label: {
                 Image(systemName: "plus").font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white).frame(width: 38, height: 38)
                     .background(palette.accent, in: RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
-            .opacity(draft.isEmpty ? 0.55 : 1)
+            .opacity(hasContent ? 1 : 0.55)
             .accessibilityLabel("Add to clipboard history")
+            .macFeedbackTarget("history.add")
             .help("Add to clipboard history")
             .contextMenu {
-                Button("Add from system clipboard") { add(paste: true) }
+                Button("Add from system clipboard") {
+                    model.macOperation(at: "history.add") { try model.save(clipboardClips(in: .general)) }
+                }
                 Button("Import file") { importing = true }
             }
         }
@@ -531,15 +578,29 @@ struct MacClipComposer: View {
         .padding(.horizontal, compact ? 10 : 12).padding(.vertical, 10)
         .background(palette.raised)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            model.operation { try model.save(result.get().map { try fileClip($0) }) }
+            model.macOperation(at: "history.add") { try model.save(result.get().map { try fileClip($0) }) }
         }
     }
 
-    private func add(paste: Bool = false) {
-        guard paste || !draft.isEmpty else { return }
-        model.operation {
-            if paste { try model.save(clipboardClips(in: .general)) }
-            else { try model.save([.text(draft)]); draft = "" }
+    private func stagePaste(_ pasteboard: NSPasteboard) {
+        do {
+            let clips = try clipboardClips(in: pasteboard)
+            for clip in clips { try clip.validate() }
+            pastedClips.append(contentsOf: clips)
+            model.showMacFeedback("", at: "history.add")
+        } catch {
+            model.showMacFeedback(error.localizedDescription, at: "history.add")
+        }
+    }
+
+    private func add(_ text: String) {
+        guard !text.isEmpty || !pastedClips.isEmpty else { return }
+        var clips = pastedClips
+        if !text.isEmpty { clips.append(.text(text)) }
+        model.macOperation(at: "history.add") {
+            try model.save(clips)
+            pastedClips = []
+            draft = ""
         }
     }
 }
@@ -550,14 +611,19 @@ struct MacClipDetail: View {
     let sourceName: String
     let sourceApplication: String?
     let showsCopy: Bool
+    let deleteShortcutEnabled: Bool
+    let copy: (() -> Void)?
 
-    init(model: Model, row: Summary, sourceName: String? = nil, sourceApplication: String? = nil) {
+    init(model: Model, row: Summary, sourceName: String? = nil, sourceApplication: String? = nil,
+         deleteShortcutEnabled: Bool = true, copy: (() -> Void)? = nil) {
         self.model = model
         self.row = row
         let remote = row.received ?? model.peers.contains { $0.name == row.source }
         self.sourceName = sourceName ?? (remote ? row.source : Host.current().localizedName ?? ClipRelayPreferences.localized("This Mac"))
         self.sourceApplication = sourceApplication ?? (!remote && row.source != "Local" ? row.source : nil)
         self.showsCopy = sourceName == nil
+        self.deleteShortcutEnabled = deleteShortcutEnabled
+        self.copy = copy
     }
 
     @State private var clip: Clip?
@@ -595,7 +661,9 @@ struct MacClipDetail: View {
                     }
                 }
             }
-            .frame(maxHeight: 330)
+            // A legacy scroller takes space from the text and changes its wrapping.
+            .scrollIndicators(.never)
+            .frame(maxHeight: .infinity, alignment: .top)
             .accessibilityIdentifier("mac.history.detail.preview")
             Divider()
             VStack(alignment: .leading, spacing: 12) {
@@ -610,20 +678,27 @@ struct MacClipDetail: View {
                 Grid(horizontalSpacing: 8, verticalSpacing: 8) {
                     GridRow {
                         detailButton(row.pinned ? "Unpin" : "Pin", symbol: row.pinned ? "pin.slash" : "pin") {
-                            model.operation { try model.library?.pin(row.id) }
+                            model.macOperation(at: "detail.pin") { try model.library?.pin(row.id) }
+                        }.macFeedbackTarget("detail.pin")
+                        detailButton(row.burn ? "Turn off burn after copy" : "Burn after copy", symbol: "flame") {
+                            model.macOperation(at: "detail.burn") { try model.library?.setBurn(row.id, !row.burn) }
                         }
-                        detailButton(row.burn ? "Turn off burn after paste" : "Burn after paste", symbol: "flame") {
-                            model.operation { try model.library?.setBurn(row.id, !row.burn) }
-                        }
+                        .macFeedbackTarget("detail.burn")
                         .help("Remove from this Mac when copied from history")
                     }
                     GridRow {
                         detailButton("Export file", symbol: "square.and.arrow.down", action: export)
+                            .macFeedbackTarget("detail.export")
                         detailButton("Delete", symbol: "trash", destructive: true) { confirming = true }
                             .accessibilityIdentifier("mac.history.detail.delete")
+                            .macFeedbackTarget("detail.delete")
                     }
                 }
-                if showsCopy { detailButton("Copy", symbol: "doc.on.doc") { model.copy(row) } }
+                if showsCopy {
+                    detailButton("Copy", symbol: "doc.on.doc") {
+                        if let copy { copy() } else { model.macCopy(row, at: "detail.copy") }
+                    }.macFeedbackTarget("detail.copy")
+                }
             }
             .fixedSize(horizontal: false, vertical: true)
             .layoutPriority(1)
@@ -631,6 +706,7 @@ struct MacClipDetail: View {
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(palette.surface)
+        .background(MacDeleteShortcut(enabled: deleteShortcutEnabled) { confirming = true })
         .task(id: row.id) {
             thumbnail = nil
             clip = try? model.storedClip(row.id)
@@ -639,8 +715,8 @@ struct MacClipDetail: View {
             }
         }
         .alert("Confirm deletion", isPresented: $confirming) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) { model.operation { try model.library?.delete(row.id) } }
+            Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
+            Button("Delete", role: .destructive) { model.macOperation(at: "detail.delete") { try model.library?.delete(row.id) } }
         }
     }
 
@@ -678,8 +754,9 @@ struct MacClipDetail: View {
 
     private func expiry(_ title: String, seconds: TimeInterval?) -> some View {
         let selected = row.expirySeconds == seconds
+        let target = "detail.expiry.\(title)"
         return Button {
-            model.operation { try model.library?.setExpiry(row.id, after: seconds) }
+            model.macOperation(at: target) { try model.library?.setExpiry(row.id, after: seconds) }
         } label: {
             Text(LocalizedStringKey(title)).font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .frame(maxWidth: .infinity).padding(.vertical, 6)
@@ -689,6 +766,7 @@ struct MacClipDetail: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .macFeedbackTarget(target)
     }
 
     private func detailButton(_ title: String, symbol: String, destructive: Bool = false,
@@ -713,9 +791,47 @@ struct MacClipDetail: View {
             if let type = UTType(value.type) { panel.allowedContentTypes = [type] }
             panel.begin { result in
                 guard result == .OK, let destination = panel.url else { return }
-                model.operation { try value.bytes.write(to: destination, options: .atomic) }
+                model.macOperation(at: "detail.export") { try value.bytes.write(to: destination, options: .atomic) }
             }
-        } catch { model.notice = error.localizedDescription }
+        } catch { model.showMacFeedback(error.localizedDescription, at: "detail.export") }
+    }
+}
+
+private struct MacDeleteShortcut: NSViewRepresentable {
+    let enabled: Bool
+    let confirm: () -> Void
+
+    func makeNSView(context: Context) -> KeyMonitor { KeyMonitor() }
+
+    func updateNSView(_ view: KeyMonitor, context: Context) {
+        view.confirm = enabled ? confirm : nil
+    }
+
+    static func dismantleNSView(_ view: KeyMonitor, coordinator: ()) { view.stop() }
+
+    final class KeyMonitor: NSView {
+        var confirm: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stop()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let window = self.window, event.window === window,
+                      window.attachedSheet == nil, let confirm = self.confirm,
+                      event.keyCode == kVK_Delete || event.keyCode == kVK_ForwardDelete,
+                      event.modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty,
+                      (window.firstResponder as? NSTextView)?.isEditable != true else { return event }
+                if !event.isARepeat { confirm() }
+                return nil
+            }
+        }
+
+        func stop() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
     }
 }
 #endif

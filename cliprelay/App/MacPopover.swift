@@ -3,6 +3,11 @@ import AppKit
 import Carbon
 import SwiftUI
 
+enum MacMenuShortcut {
+    static let defaultKeyCode = kVK_ANSI_V
+    static let defaultModifiers = cmdKey | shiftKey
+}
+
 struct MenuContent: View {
     private enum Filter: Hashable {
         case all, kind(MacClipKind), pinned
@@ -11,6 +16,7 @@ struct MenuContent: View {
     @ObservedObject var model: Model
     var openMain: () -> Void = {}
     var close: () -> Void = {}
+    var showCopyConfirmation: () -> Void = {}
     @State private var filter: Filter = .all
     @State private var search = ""
     @State private var pairing = false
@@ -50,7 +56,7 @@ struct MenuContent: View {
                     header
                 }
                 MacHistoryGate {
-                    if let detail { MacClipDetail(model: model, row: detail) }
+                    if let detail { MacClipDetail(model: model, row: detail) { copyAndClose(detail) } }
                     else { history }
                 }
             }
@@ -58,9 +64,7 @@ struct MenuContent: View {
         .frame(width: 374, height: 568)
         .background(palette.surface)
         .foregroundStyle(palette.text)
-        .overlay(alignment: .bottom) {
-            if !pairing, model.copyToast != nil { MacCopyToast() }
-        }
+        .macFeedbackOverlay(pairing ? nil : model.macFeedback)
         .onReceive(model.$rows) { _ in
             session.update((try? model.library?.macHistory()) ?? model.menuRows)
         }
@@ -122,7 +126,7 @@ struct MenuContent: View {
                 }
                 .padding(.horizontal, 14)
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.never)
             .padding(.bottom, 9)
             Rectangle().fill(palette.divider).frame(height: 1)
 
@@ -138,32 +142,33 @@ struct MenuContent: View {
                 } else {
                     LazyVStack(spacing: 0) {
                         ForEach(rows) { row in
-                            Button { model.copy(row) } label: { label(for: row) }
+                            Button { copyAndClose(row) } label: { label(for: row) }
                                 .buttonStyle(MacMenuRowStyle())
                                 .accessibilityIdentifier("mac.menu.copy.\(row.id)")
+                                .macFeedbackTarget("menu.row.\(row.id)")
                                 .contextMenu {
-                                    Button("Copy") { model.copy(row) }
+                                    Button("Copy") { copyAndClose(row) }
                                     Button("Details") { selectedID = row.id }
                                     Button("Send to devices") {
-                                        model.operation {
-                                            let clip = try model.storedClip(row.id)
-                                            Task { await model.syncConfigured(clip) }
+                                        Task {
+                                            await model.sendStoredClip(row.id) { model.showMacFeedback($0, at: "menu.row.\(row.id)") }
                                         }
                                     }
-                                    .disabled(model.peers.isEmpty)
+                                        .disabled(model.peers.isEmpty)
                                 }
                             Rectangle().fill(palette.divider).frame(height: 1)
                         }
                     }
                 }
             }
-            .scrollIndicators(.hidden)
-            if !model.notice.isEmpty {
-                Text(model.notice).font(.caption).foregroundStyle(palette.secondary)
-                    .lineLimit(1).padding(4)
-            }
+            .scrollIndicators(.never)
             MacClipComposer(model: model, compact: true)
         }
+    }
+
+    func copyAndClose(_ row: Summary) {
+        if model.copy(row, showConfirmation: false) { showCopyConfirmation() }
+        else { model.showMacFeedback(model.notice, at: selectedID == row.id ? "detail.copy" : "menu.row.\(row.id)") }
     }
 
     private var records: [Summary] {
@@ -244,6 +249,8 @@ private struct MacMenuRowStyle: ButtonStyle {
     private var status: NSStatusItem?
     private let popover = NSPopover()
     private var panel: NSPanel?
+    private var copyToast: MacCopyToastPanel?
+    private var copyToastTask: Task<Void, Never>?
     private var hotKey: EventHotKeyRef?
     private var registeredShortcut: (key: Int, modifiers: Int)?
     private var handler: EventHandlerRef?
@@ -281,7 +288,7 @@ private struct MacMenuRowStyle: ButtonStyle {
         var replacement: EventHotKeyRef?
         let result = RegisterEventHotKey(keyCode, modifierFlags, identifier, GetApplicationEventTarget(), 0, &replacement)
         guard result == noErr else {
-            model?.notice = ClipRelayPreferences.localized("Menu shortcut is unavailable")
+            model?.showMacFeedback(ClipRelayPreferences.localized("Menu shortcut is unavailable"), at: "settings.shortcut")
             return
         }
         if let hotKey { UnregisterEventHotKey(hotKey) }
@@ -321,7 +328,7 @@ private struct MacMenuRowStyle: ButtonStyle {
             return
         }
         guard let model else { return }
-        let content = MenuContent(model: model, openMain: showMain, close: close)
+        let content = MenuContent(model: model, openMain: showMain, close: close, showCopyConfirmation: showCopied)
             .modifier(MacAppearance())
         if let status, status.isVisible, let button = status.button, button.window?.isVisible == true {
             popover.contentViewController = NSHostingController(rootView: content)
@@ -348,9 +355,59 @@ private struct MacMenuRowStyle: ButtonStyle {
         floating?.close()
     }
 
+    private func showCopied() {
+        let statusButton = status?.isVisible == true ? status?.button : nil
+        let statusWindow = statusButton?.window
+        let menuWindow = popover.contentViewController?.view.window ?? panel
+        let screen = menuWindow?.screen ?? statusWindow?.screen ?? NSScreen.main
+        let anchor = statusWindow.flatMap { window in
+            statusButton.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
+        } ?? menuWindow?.frame
+        close()
+        guard let screen else { return }
+        showCopyToast(on: screen, centeredOn: anchor)
+    }
+
+    private func showCopyToast(on screen: NSScreen, centeredOn anchor: NSRect?) {
+        copyToastTask?.cancel()
+        copyToast?.orderOut(nil)
+        let toast = MacCopyToastPanel()
+        let frame = screen.visibleFrame
+        let size = toast.frame.size
+        let x = (anchor?.midX ?? frame.maxX - size.width / 2 - 12) - size.width / 2
+        toast.setFrameTopLeftPoint(NSPoint(x: max(frame.minX + 8, min(x, frame.maxX - size.width - 8)),
+                                           y: frame.maxY - 8))
+        copyToast = toast
+        toast.orderFrontRegardless()
+        copyToastTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            self?.copyToast?.orderOut(nil)
+            self?.copyToast = nil
+        }
+    }
+
     func windowDidResignKey(_ notification: Notification) {
         if let window = notification.object as? NSWindow, window === panel { close() }
     }
+}
+
+@MainActor final class MacCopyToastPanel: NSPanel {
+    init() {
+        let host = NSHostingView(rootView: MacCopyToast(animateCheck: true).padding(12).fixedSize().modifier(MacAppearance()))
+        super.init(contentRect: NSRect(origin: .zero, size: host.fittingSize),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        ignoresMouseEvents = true
+        level = .popUpMenu
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        hidesOnDeactivate = false
+        contentView = host
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
 private final class MacMenuPanel: NSPanel {
@@ -362,8 +419,8 @@ struct MacWorkspaceWindow: View {
     let menu: MacMenuController
     @Environment(\.openWindow) private var openWindow
     @AppStorage("mac.showMenuBarIcon") private var showMenuBarIcon = true
-    @AppStorage("mac.shortcutKeyCode") private var shortcutKey = 9
-    @AppStorage("mac.shortcutModifiers") private var shortcutModifiers = 768
+    @AppStorage("mac.shortcutKeyCode") private var shortcutKey = MacMenuShortcut.defaultKeyCode
+    @AppStorage("mac.shortcutModifiers") private var shortcutModifiers = MacMenuShortcut.defaultModifiers
 
     var body: some View {
         MacWorkspace(model: model)

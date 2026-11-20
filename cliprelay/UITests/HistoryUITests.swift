@@ -77,11 +77,10 @@ final class HistoryUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Cancel invitation"].exists)
 
         let sync = app.buttons["Sync now"]
-        for _ in 0..<4 where !sync.isHittable { app.swipeUp() }
-        XCTAssertTrue(sync.isHittable)
-        sync.tap()
-        let syncSummary = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "↑ ")).firstMatch
-        XCTAssertFalse(syncSummary.waitForExistence(timeout: 2))
+        for _ in 0..<4 where !sync.exists { app.swipeUp() }
+        XCTAssertTrue(sync.waitForExistence(timeout: 3))
+        XCTAssertFalse(sync.isEnabled, "Syncing requires a paired device")
+        XCTAssertFalse(app.staticTexts["Pending"].exists)
 
         tabs.buttons["Settings"].tap()
         XCTAssertTrue(app.buttons["Setup guide"].waitForExistence(timeout: 3))

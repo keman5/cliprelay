@@ -22,26 +22,38 @@ const wait=async(file,dir) => {
   throw Error('Timeout waiting for '+file+' in '+dir);
 };
 const localOnly = process.argv.includes('--local-only');
+const duplexOnly = process.argv.includes('--duplex-only');
 const mode = localOnly ? '1' : '0';
 let proc;
 try {
   try{execFileSync('xcrun',['simctl','terminate',sim,id],{stdio:'ignore'})}catch{}
   rmSync(ios,{recursive:true,force:true});
   mkdirSync(ios,{recursive:true,mode:0o700});
-  if (!localOnly) {
+  if (!localOnly && !duplexOnly) {
     const conf=process.env.CLIPRELAY_CONFIG_DIR ?? join(homedir(),'.config','cliprelay-test');
     const { RELAY_TOKEN }=JSON.parse(readFileSync(join(conf,'worker-secrets.json'),'utf8'));
     assert.match(RELAY_TOKEN,/^[a-f0-9]{64}$/);
     for(const d of [mac,ios]) writeFileSync(join(d,'credential'),RELAY_TOKEN,{mode:0o600});
   }
-  proc=spawn('/Applications/ClipRelay.app/Contents/MacOS/ClipRelay',['--relay-qa'],{env:{...process.env,CLIPRELAY_QA_DIR:mac,CLIPRELAY_QA_LOCAL_ONLY:mode},stdio:'ignore'});
+  const duplex = duplexOnly ? '1' : '0';
+  proc=spawn(process.env.CLIPRELAY_QA_MAC_BINARY ?? '/Applications/ClipRelay.app/Contents/MacOS/ClipRelay',['--relay-qa'],{env:{...process.env,CLIPRELAY_QA_DIR:mac,CLIPRELAY_QA_LOCAL_ONLY:mode,CLIPRELAY_QA_DUPLEX_ONLY:duplex},stdio:'ignore'});
   process.env.SIMCTL_CHILD_CLIPRELAY_QA_LOCAL_ONLY = mode;
+  process.env.SIMCTL_CHILD_CLIPRELAY_QA_DUPLEX_ONLY = duplex;
   simctl('launch',sim,id,'--relay-qa');
   for(const d of [mac,ios]) await wait('card',d);
   copyFileSync(join(mac,'card'),join(ios,'peer')); copyFileSync(join(ios,'card'),join(mac,'peer'));
   for(const d of [mac,ios]) await wait('ready',d);
   copyFileSync(join(ios,'phone.clipnote'),join(mac,'phone.clipnote'));
   for(const d of [mac,ios]) writeFileSync(join(d,'go'),'');
+  if (localOnly) {
+    for (const [file, source, target] of [
+      ['hub-history', mac, ios], ['verified-first', ios, mac],
+      ['hub-updated', mac, ios], ['verified-update', ios, mac],
+    ]) {
+      await wait(file, source);
+      copyFileSync(join(source, file), join(target, file));
+    }
+  }
   for(const [name,d] of [['Mac',mac],['iOS Simulator',ios]]) {
     const result=await wait('result',d);
     console.log(name,result,'Discovery:',existsSync(join(d,'discovery'))?readFileSync(join(d,'discovery'),'utf8'):'unavailable');

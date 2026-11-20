@@ -11,6 +11,7 @@ struct DiagnosticsSection: View {
             MacSettingsCard(title: "Diagnostics") {
                 details
                 Button("Refresh diagnostics", action: refresh).padding(.top, 9)
+                    .macFeedbackTarget("storage.diagnostics")
             }
             #else
             Section("Diagnostics") {
@@ -53,6 +54,12 @@ struct DiagnosticsSection: View {
             _ = try library.page(kind: model.filter, search: model.search, offset: model.page * 30)
             milliseconds = (ProcessInfo.processInfo.systemUptime - start) * 1_000
             usage = try library.usage()
-        } catch { model.notice = error.localizedDescription }
+        } catch {
+            #if os(macOS)
+            model.showMacFeedback(error.localizedDescription, at: "storage.diagnostics")
+            #else
+            model.notice = error.localizedDescription
+            #endif
+        }
     }
 }
