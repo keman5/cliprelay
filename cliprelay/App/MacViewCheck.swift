@@ -23,12 +23,14 @@ enum MacViewCheck {
         try checkClipboard(model, in: root)
         try checkComposerPaste(in: root.appendingPathComponent("composer"))
         try checkAutomaticSync(model)
+        try checkClipboardPause(in: root.appendingPathComponent("pause"))
         let toast = MacCopyToastPanel()
         guard !toast.canBecomeKey, !toast.canBecomeMain, toast.ignoresMouseEvents,
               !toast.isVisible, toast.frame.width > 0, toast.frame.height > 0 else { throw RelayFailure.invalid }
         try checkCopyConfirmation(model)
         try checkItemActions(in: root.appendingPathComponent("actions"))
         try checkCopyOrder(in: root.appendingPathComponent("copy-order"))
+        try checkLongHistorySearch(in: root.appendingPathComponent("long-search"))
         try checkExclusions()
         try checkSettings(in: root.appendingPathComponent("settings"))
         let size = NSSize(width: 980, height: 600)
@@ -55,6 +57,24 @@ enum MacViewCheck {
         print("PASS hidden Mac workspace pages and menu layout")
         try checkWorkspaceFocus(model, size: size)
         try checkDeleteShortcut(model, size: size)
+    }
+
+    private static func checkLongHistorySearch(in root: URL) throws {
+        let library = try Library(root)
+        let prefix = String(repeating: "Lorem ipsum mixed English and 中文测试文字. ", count: 1_200)
+        let clips = (0..<1_000).map { index in
+            Clip.text(prefix + String(index) + (index == 144 ? " UniqueEnglishNeedle 唯一中文关键词" : ""))
+        }
+        try library.saveCopies(clips, source: "Search QA")
+        let matchingID = clips[144].id.uuidString
+        guard try library.macHistory().count == 1_000 else { throw RelayFailure.invalid }
+        for query in ["uniqueenglishneedle", "唯一中文关键词", "absentneedle"] {
+            let start = ContinuousClock.now
+            let results = try library.macHistory(search: query)
+            let expected = query == "absentneedle" ? [] : [matchingID]
+            guard results.map(\.id) == expected else { throw RelayFailure.invalid }
+            print("PASS 1,000 × \(prefix.utf8.count)-byte history search (\(query)) in \(start.duration(to: .now))")
+        }
     }
 
     @MainActor private static func checkDetailHover(_ model: Model, in window: NSWindow) throws {
@@ -312,6 +332,55 @@ enum MacViewCheck {
         print("PASS Mac automatic sync queues items only when enabled")
     }
 
+    @MainActor private static func checkClipboardPause(in root: URL) throws {
+        let suite = "cliprelay.qa.pause.\(UUID())"
+        guard let settings = UserDefaults(suiteName: suite) else { throw RelayFailure.invalid }
+        defer { settings.removePersistentDomain(forName: suite) }
+        settings.set(true, forKey: "clipboard.sendAutomatically")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let library = try Library(root)
+        let local = try Identity(secret: Data(repeating: 71, count: 32), name: "Mac")
+        let peer = try Identity(secret: Data(repeating: 72, count: 32), name: "Peer").peer
+        try library.pair(peer)
+        let model = Model(clipboardSettings: settings)
+        model.transfer = Exchange(library, local)
+        let prior = Clip.text("Already waiting")
+        try model.save([prior])
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(15 * 60)
+        model.setMacPaused(true, in: board, at: start)
+        board.clearContents()
+        guard board.setString("Copied during pause", forType: .string),
+              model.macPauseUntil == end,
+              model.newClipboardVersion(in: board, at: start.addingTimeInterval(1)) == nil
+        else { throw RelayFailure.invalid }
+        try model.recordClipboardCopies(in: board, source: "QA", sendToPeers: true)
+        let manual = Clip.text("Manually added during pause")
+        try model.save([manual])
+        guard try library.recordCount(kind: "") == 2,
+              try library.sharedSends(peer) == [prior.id.uuidString]
+        else { throw RelayFailure.invalid }
+
+        let restarted = Model(clipboardSettings: settings)
+        restarted.transfer = model.transfer
+        guard restarted.macPauseUntil == end,
+              restarted.newClipboardVersion(in: board, at: end) == nil,
+              restarted.macPauseUntil == nil,
+              restarted.newClipboardVersion(in: board, at: end) == nil
+        else { throw RelayFailure.invalid }
+
+        board.clearContents()
+        guard board.setString("Copied after pause", forType: .string),
+              restarted.newClipboardVersion(in: board, at: end) == board.changeCount
+        else { throw RelayFailure.invalid }
+        try restarted.recordClipboardCopies(in: board, source: "QA", sendToPeers: true)
+        guard try library.recordCount(kind: "") == 3,
+              try library.sharedSends(peer).count == 2
+        else { throw RelayFailure.invalid }
+        print("PASS 15-minute clipboard pause persists across restart and skips paused copies")
+    }
+
     @MainActor private static func checkWorkspaceFocus(_ model: Model, size: NSSize) throws {
         let window = HiddenFocusWindow(contentRect: NSRect(origin: NSPoint(x: -4000, y: -4000), size: size),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -509,6 +578,22 @@ enum MacViewCheck {
         let text = Data("Text fixture".utf8)
         try text.write(to: file)
         try Data("%PDF-fixture".utf8).write(to: pdf)
+        let oversized = root.appendingPathComponent("oversized.bin")
+        FileManager.default.createFile(atPath: oversized.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: UInt64(Clip.limit + 1))
+        try handle.close()
+        guard pasteboard.writeObjects([file as NSURL, oversized as NSURL, pdf as NSURL]) else { throw RelayFailure.invalid }
+        let partial = try clipboardClips(in: pasteboard)
+        guard partial.clips.map(\.name) == ["notes.txt", "example.pdf"],
+              partial.failures.count == 1,
+              partial.failures.first?.contains("oversized.bin") == true else { throw RelayFailure.invalid }
+        let saved = partial.save { clip in
+            if clip.name == "example.pdf" { throw RelayFailure.storage }
+        }
+        guard saved.clips.map(\.name) == ["notes.txt"], saved.failures.count == 2,
+              saved.report("Saved %lld items").contains("example.pdf") else { throw RelayFailure.invalid }
+        pasteboard.clearContents()
         guard pasteboard.writeObjects([file as NSURL, pdf as NSURL]) else { throw RelayFailure.invalid }
         try model.recordClipboardCopies(in: pasteboard, source: "QA")
         guard model.rows.count == 2, model.rows.allSatisfy({ $0.kind == "File" }),
@@ -538,7 +623,7 @@ enum MacViewCheck {
         privateItem.setString("Private", forType: .string)
         privateItem.setString("", forType: .init("org.nspasteboard.ConcealedType"))
         pasteboard.clearContents()
-        guard pasteboard.writeObjects([privateItem]),
+        guard pasteboard.writeObjects([file as NSURL, privateItem]),
               (try? model.recordClipboardCopies(in: pasteboard, source: "QA")) == nil,
               model.rows.count == 3 else { throw RelayFailure.invalid }
 

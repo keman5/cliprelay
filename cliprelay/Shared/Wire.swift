@@ -38,6 +38,8 @@ struct Clip: Codable, Identifiable {
     var bytes: Data
     var plain: String?
     var isFile: Bool?
+    var deviceOnly: Bool?
+    var relayReceiptRequested: Bool?
     static let limit = 10_000_000
     func validate() throws {
         guard !bytes.isEmpty, name.utf8.count <= 512, !type.isEmpty, type.utf8.count < 160 else { throw RelayFailure.invalid }
@@ -57,6 +59,18 @@ struct Clip: Codable, Identifiable {
         if uti.conforms(to: .rtf) || uti.conforms(to: .html) { return "Rich text" }
         return uti.conforms(to: .plainText) ? "Text" : "File"
     }
+    func sealForDelivery(from sender: Identity, to peer: Peer) throws -> Data {
+        var clip = self
+        clip.relayReceiptRequested = true
+        return try Envelope.seal(Codec.pack(clip), from: sender, to: peer)
+    }
+}
+
+struct TerminalReceipt: Codable {
+    static let purpose = "terminal-receipt"
+    let id: UUID
+    let clip: UUID
+    let digest: String
 }
 
 struct Peer: Codable, Hashable, Identifiable {

@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
 
 struct ArchiveSettings: View {
     @ObservedObject var model: Model
@@ -84,8 +87,34 @@ struct ArchiveSettings: View {
     }
 
     private func shareBackup(_ url: URL) -> some View {
+        #if os(macOS)
+        Button {
+            shareOnMac(url)
+        } label: {
+            Label("Share encrypted backup", systemImage: "square.and.arrow.up")
+        }
+        .disabled(working)
+        .macFeedbackTarget("backup.share")
+        #else
         ShareLink(item: url) { Label("Share encrypted backup", systemImage: "square.and.arrow.up") }
+        #endif
     }
+
+    #if os(macOS)
+    private func shareOnMac(_ url: URL) {
+        working = true
+        let origin = NSApp.keyWindow
+        Task { @MainActor in
+            defer { working = false }
+            do {
+                guard try await MacHistoryAuthentication.verify("Verify to share an encrypted backup"),
+                      exportURL == url, let view = origin?.contentView, origin?.isVisible == true else { return }
+                guard FileManager.default.fileExists(atPath: url.path) else { throw RelayFailure.unavailable }
+                NSSharingServicePicker(items: [url]).show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+            } catch { model.showMacFeedback(error.localizedDescription, at: "backup.share") }
+        }
+    }
+    #endif
 
     @ViewBuilder private var importActions: some View {
         Button("Import") { commit() }.disabled((contents?.count ?? 0) == 0)
@@ -101,11 +130,17 @@ struct ArchiveSettings: View {
     private func export() {
         guard let library = model.library else { return }
         let secret = password
+        #if os(iOS)
         password = ""
+        #endif
         working = true
         Task { @MainActor in
             defer { working = false }
             do {
+                #if os(macOS)
+                guard try await MacHistoryAuthentication.verify("Verify to create an encrypted backup") else { return }
+                if password == secret { password = "" }
+                #endif
                 let newURL = try await Task.detached {
                     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,

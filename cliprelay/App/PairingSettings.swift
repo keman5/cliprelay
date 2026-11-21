@@ -74,11 +74,31 @@ struct PairingSettings: View {
     @State private var candidate: Review?
     @State private var pendingRemoval: Peer?
     @State private var scanning = false
+    #if os(macOS)
+    @AppStorage("clipboard.sendAutomatically") private var sendAutomatically = true
+    @State private var pairedPeer: Peer?
+    #endif
     @State private var now = Date.now
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Group {
+            #if os(macOS)
+            if let pairedPeer {
+                Section("验证设备连接") {
+                    Text("确认另一台设备也显示已配对，再发送一条固定的测试文字。")
+                        .font(.callout).foregroundStyle(.secondary)
+                    MacPairingTest(model: model, peer: pairedPeer).id(pairedPeer.id)
+                }
+            } else if separateDeviceList {
+                Section {
+                    Text(sendAutomatically
+                         ? "自动发送已开启。配对后，新复制的内容会发给所有已配对设备。"
+                         : "自动发送已关闭。配对后，可在历史中选择设备手动发送。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            #endif
             if !guidingMacPairing { invitationControls }
             recipientControls
             if !guidingMacPairing {
@@ -92,7 +112,7 @@ struct PairingSettings: View {
             if let selectedNearbyService { await reviewNearby(selectedNearbyService) }
         }
         .onDisappear {
-            if let card { model.transfer?.offerPairing(nil, replacing: card.challenge) }
+            if let card, approvalCode == nil { model.transfer?.offerPairing(nil, replacing: card.challenge) }
         }
         #endif
         .onReceive(clock) { now = $0 }
@@ -104,7 +124,11 @@ struct PairingSettings: View {
             Button("Trust device") { approve(review) }
             Button("Cancel", role: .cancel) {}
         } message: { review in
+            #if os(macOS)
+            Text("在另一台设备上核对以下指纹，再点「信任设备」。\n\(review.peer.name)\n\(review.peer.fingerprint)")
+            #else
             Text("\(review.peer.name)\n\(review.peer.fingerprint)")
+            #endif
         }
         .alert("Remove paired device?", isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }
@@ -144,9 +168,17 @@ struct PairingSettings: View {
                     .macFeedbackTarget("pairing.invitation")
                     #endif
                 if approvalCode == nil, let card, card.expires > now, let value = try? card.code() {
+                    #if os(macOS)
+                    Text("请在另一台设备打开随贴，选择「输入配对码」并输入这 6 位数字。iPhone 也可扫描下方二维码。")
+                        .font(.callout).foregroundStyle(.secondary)
+                    #endif
                     if let peer = model.transfer?.pendingPairing() {
                         Text("Pairing request from \(peer.name)")
                         fingerprint(peer)
+                        #if os(macOS)
+                        Text("请核对与另一台设备上显示的指纹一致，再点「信任设备」。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        #endif
                         Button("Trust device") { approveRequest(from: peer) }
                     }
                     let seconds = Int(card.expires.timeIntervalSince(now).rounded(.up))
@@ -200,6 +232,9 @@ struct PairingSettings: View {
         card = invitation
         approvalCode = nil
         invitationStatus = nil
+        #if os(macOS)
+        pairedPeer = nil
+        #endif
     }
 
     private var recipientControls: some View {
@@ -219,6 +254,12 @@ struct PairingSettings: View {
             }
             #endif
             if waiting == nil {
+                #if os(macOS)
+                if pairedPeer == nil && !showInvitation {
+                    Text("在另一台设备打开随贴并选择「显示配对码」，然后在这里输入 6 位数字。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                #endif
                 TextField("6-digit pairing code", text: $shortCode)
                     .focused($shortCodeFocused)
                     #if os(iOS)
@@ -444,6 +485,9 @@ struct PairingSettings: View {
             code = ""
             pairingStatus = nil
             model.reload()
+            #if os(macOS)
+            pairedPeer = peer
+            #endif
             onPaired?(peer)
         } catch {
             invitationStatus = "Could not approve this request. Start a new invitation."
@@ -458,6 +502,9 @@ struct PairingSettings: View {
         code = ""
         pairingStatus = "Paired with \(peer.name)"
         model.reload()
+        #if os(macOS)
+        pairedPeer = peer
+        #endif
         onPaired?(peer)
     }
 
@@ -468,7 +515,11 @@ struct PairingSettings: View {
             guard !Task.isCancelled, waiting?.code == pending.code else { return }
             if let reply {
                 if reply.code == "pending" {
+                    #if os(macOS)
+                    pairingStatus = "请回到显示配对码的设备，核对指纹并点「信任设备」。"
+                    #else
                     pairingStatus = "Waiting for the other device to confirm"
+                    #endif
                 } else {
                     do {
                         try finishPairing(pending, receipt: reply.code, address: reply.address)

@@ -9,20 +9,20 @@ enum MacMenuShortcut {
 }
 
 struct MenuContent: View {
-    private enum Filter: Hashable {
-        case all, kind(MacClipKind), pinned
-    }
-
     @ObservedObject var model: Model
     var openMain: () -> Void = {}
+    var openPrivacy: () -> Void = {}
     var close: () -> Void = {}
     var showCopyConfirmation: () -> Void = {}
-    @State private var filter: Filter = .all
-    @State private var search = ""
+    @State private var kind: MacClipKind?
+    @State private var pinnedOnly = false
+    @State private var search = MacHistorySearch()
+    @State private var matches: (request: MacHistorySearch, rows: [Summary])?
     @State private var pairing = false
     @State private var selectedID: String?
     @State private var session = MacHistorySession()
     @FocusState private var searching: Bool
+    @State private var keyboardNavigation = false
     @AppStorage("mac.maskSensitive") private var maskSensitive = true
     @AppStorage("mac.maskCodes") private var maskCodes = false
     @Environment(\.colorScheme) private var scheme
@@ -57,16 +57,19 @@ struct MenuContent: View {
                 }
                 MacHistoryGate {
                     if let detail { MacClipDetail(model: model, row: detail) { copyAndClose(detail) } }
-                    else { history }
+                    else { history.task(id: search) { [search] in await findMatches(for: search) } }
                 }
             }
         }
         .frame(width: 374, height: 568)
         .background(palette.surface)
         .foregroundStyle(palette.text)
+        .focusEffectDisabled(!keyboardNavigation)
+        .background(MacWorkspaceFocus(keyboardNavigation: $keyboardNavigation))
         .macFeedbackOverlay(pairing ? nil : model.macFeedback)
         .onReceive(model.$rows) { _ in
             session.update((try? model.library?.macHistory()) ?? model.menuRows)
+            search.revision += 1
         }
         .onExitCommand {
             if searching { searching = false }
@@ -81,30 +84,24 @@ struct MenuContent: View {
         HStack(spacing: 7) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("History").font(.system(size: 19, weight: .heavy))
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(model.macLANConnected ? Color.green : Color.red)
-                        .frame(width: 6, height: 6)
-                    Text(model.macLANConnected ? "Connected · Local Network" : "Offline")
-                        .font(.system(size: 10))
-                        .foregroundStyle(palette.secondary)
-                        .lineLimit(1)
-                }
             }
             .fixedSize()
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass").foregroundStyle(palette.muted)
-                TextField("Search history…", text: $search)
+                TextField("Search history…", text: $search.query)
                     .textFieldStyle(.plain)
                     .focused($searching)
                     .font(.system(size: 13))
                     .accessibilityIdentifier("mac.menu.search")
+                    .macFeedbackTarget("menu.search")
             }
             .padding(.horizontal, 12)
             .frame(height: 34)
             .background(palette.raised, in: Capsule())
             .overlay { Capsule().strokeBorder(palette.line) }
-            icon("qrcode.viewfinder", "Scan pairing QR code") { pairing = true }
+            if !model.peers.isEmpty {
+                icon("qrcode.viewfinder", "Scan pairing QR code") { pairing = true }
+            }
             icon("arrow.up.right.square", "Open ClipRelay", action: openMain)
             icon("xmark", "Close", action: close)
         }
@@ -116,23 +113,33 @@ struct MenuContent: View {
     private var history: some View {
         let rows = records
         return VStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 6) {
-                    chip(Text("All"), .all)
-                    ForEach([MacClipKind.text, .link, .code, .image, .document, .pdf, .archive], id: \.self) { kind in
-                        chip(Text(verbatim: kind.title), .kind(kind))
-                    }
-                    chip(Text("Pinned"), .pinned)
+            connectionBar
+            HStack(spacing: 8) {
+                Picker("History view", selection: $pinnedOnly) {
+                    Text("Recent").tag(false)
+                    Text("Pinned").tag(true)
                 }
-                .padding(.horizontal, 14)
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Spacer()
+                Menu {
+                    Button("All types") { kind = nil }
+                    ForEach(MacClipKind.allCases) { option in
+                        Button(option.title) { kind = option }
+                    }
+                } label: {
+                    if let kind { Text(kind.title) }
+                    else { Text("All types") }
+                }
+                .fixedSize()
             }
-            .scrollIndicators(.never)
+            .padding(.horizontal, 14)
             .padding(.bottom, 9)
             Rectangle().fill(palette.divider).frame(height: 1)
 
             ScrollView {
-                if rows.isEmpty {
-                    Text("No clipboard history")
+                if rows.isEmpty && (search.query.isEmpty || matches?.request == search) {
+                    Text(search.query.isEmpty ? "No clipboard history" : "No matching items")
                         .font(.system(size: 13))
                         .foregroundStyle(palette.secondary)
                         .frame(maxWidth: .infinity)
@@ -149,12 +156,9 @@ struct MenuContent: View {
                                 .contextMenu {
                                     Button("Copy") { copyAndClose(row) }
                                     Button("Details") { selectedID = row.id }
-                                    Button("Send to devices") {
-                                        Task {
-                                            await model.sendStoredClip(row.id) { model.showMacFeedback($0, at: "menu.row.\(row.id)") }
-                                        }
+                                    if !model.peers.isEmpty {
+                                        MacSendClip(model: model, id: row.id, feedbackTarget: "menu.row.\(row.id)")
                                     }
-                                        .disabled(model.peers.isEmpty)
                                 }
                             Rectangle().fill(palette.divider).frame(height: 1)
                         }
@@ -166,19 +170,79 @@ struct MenuContent: View {
         }
     }
 
+    private var connectionBar: some View {
+        TimelineView(.periodic(from: .now, by: 2)) { context in
+            let nearby = model.macNearbyPeers
+            let pauseUntil = model.macPauseUntil.flatMap { $0 > context.date ? $0 : nil }
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if model.peers.isEmpty {
+                        Button { pairing = true } label: {
+                            Label("Connect a device", systemImage: "qrcode.viewfinder")
+                        }
+                    } else {
+                        if let device = nearby.first, nearby.count == 1 {
+                            Text("Nearby: \(device.name)")
+                        } else if nearby.isEmpty {
+                            Text("No paired devices nearby")
+                        } else {
+                            Text("\(nearby.count) nearby devices")
+                                .help(nearby.map(\.name).joined(separator: " · "))
+                        }
+                    }
+                    if let pauseUntil {
+                        Text("Paused until \(pauseUntil, format: .dateTime.hour().minute())")
+                            .foregroundStyle(palette.secondary)
+                    }
+                }
+                .lineLimit(1)
+                Spacer()
+                Menu {
+                    if pauseUntil == nil {
+                        Button("Pause for 15 minutes") { model.setMacPaused(true) }
+                    } else {
+                        Button("Resume clipboard capture and sync") { model.setMacPaused(false) }
+                    }
+                    Button("Excluded apps", action: openPrivacy)
+                } label: {
+                    Label("Clipboard privacy", systemImage: pauseUntil == nil ? "hand.raised" : "pause.circle.fill")
+                        .labelStyle(.iconOnly)
+                }
+                .fixedSize()
+            }
+            .font(.system(size: 12))
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 9)
+    }
+
     func copyAndClose(_ row: Summary) {
         if model.copy(row, showConfirmation: false) { showCopyConfirmation() }
         else { model.showMacFeedback(model.notice, at: selectedID == row.id ? "detail.copy" : "menu.row.\(row.id)") }
     }
 
     private var records: [Summary] {
-        let rows = search.isEmpty ? session.rows : session.ordered((try? model.library?.macHistory(search: search)) ?? [])
-        return rows.filter {
-            switch filter {
-            case .all: true
-            case .pinned: $0.pinned
-            case .kind(let kind): $0.macKind == kind
-            }
+        let found = matches?.request == search ? matches?.rows ?? [] : []
+        let rows = search.query.isEmpty ? session.rows : found
+        return rows
+            .filter { (!pinnedOnly || $0.pinned) && (kind == nil || $0.macKind == kind) }
+            .sorted { $0.historyRank > $1.historyRank }
+    }
+
+    private func findMatches(for request: MacHistorySearch) async {
+        guard !Task.isCancelled, search == request else { return }
+        guard !request.query.isEmpty, let root = model.library?.root else {
+            matches = (request, [])
+            return
+        }
+        do {
+            let rows = try await Library.searchMacHistory(in: root, for: request.query)
+            guard !Task.isCancelled, search == request else { return }
+            matches = (request, session.ordered(rows))
+        } catch {
+            guard !Task.isCancelled, search == request else { return }
+            matches = (request, [])
+            model.showMacFeedback(error.localizedDescription, at: "menu.search")
         }
     }
 
@@ -202,22 +266,6 @@ struct MenuContent: View {
         .padding(.horizontal, 12)
         .frame(minHeight: 52)
         .contentShape(Rectangle())
-    }
-
-    private func chip(_ title: Text, _ value: Filter) -> some View {
-        let selected = filter == value
-        return Button { filter = value } label: {
-            title.font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.horizontal, 11)
-                .frame(height: 30)
-                .foregroundStyle(selected ? palette.surface : palette.text)
-                .background(selected ? palette.text : palette.surface, in: Capsule())
-                .overlay { Capsule().strokeBorder(selected ? .clear : palette.line) }
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func icon(_ symbol: String, _ label: LocalizedStringKey, action: @escaping () -> Void) -> some View {
@@ -246,6 +294,7 @@ private struct MacMenuRowStyle: ButtonStyle {
 }
 
 @MainActor final class MacMenuController: NSObject, ObservableObject, NSWindowDelegate {
+    @Published var requestedPage: MacWorkspace.Page?
     private var status: NSStatusItem?
     private let popover = NSPopover()
     private var panel: NSPanel?
@@ -317,7 +366,12 @@ private struct MacMenuRowStyle: ButtonStyle {
     }
 
     @objc private func showMain() {
+        showWorkspace(on: nil)
+    }
+
+    private func showWorkspace(on page: MacWorkspace.Page?) {
         close()
+        requestedPage = page
         openMain()
         NSApp.activate()
     }
@@ -328,7 +382,8 @@ private struct MacMenuRowStyle: ButtonStyle {
             return
         }
         guard let model else { return }
-        let content = MenuContent(model: model, openMain: showMain, close: close, showCopyConfirmation: showCopied)
+        let content = MenuContent(model: model, openMain: showMain, openPrivacy: { [weak self] in self?.showWorkspace(on: .privacy) },
+                                  close: close, showCopyConfirmation: showCopied)
             .modifier(MacAppearance())
         if let status, status.isVisible, let button = status.button, button.window?.isVisible == true {
             popover.contentViewController = NSHostingController(rootView: content)
@@ -416,14 +471,14 @@ private final class MacMenuPanel: NSPanel {
 
 struct MacWorkspaceWindow: View {
     @ObservedObject var model: Model
-    let menu: MacMenuController
+    @ObservedObject var menu: MacMenuController
     @Environment(\.openWindow) private var openWindow
     @AppStorage("mac.showMenuBarIcon") private var showMenuBarIcon = true
     @AppStorage("mac.shortcutKeyCode") private var shortcutKey = MacMenuShortcut.defaultKeyCode
     @AppStorage("mac.shortcutModifiers") private var shortcutModifiers = MacMenuShortcut.defaultModifiers
 
     var body: some View {
-        MacWorkspace(model: model)
+        MacWorkspace(model: model, requestedPage: $menu.requestedPage)
             .modifier(MacAppearance())
             .onAppear {
                 let open = openWindow

@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-struct Summary: Identifiable {
+struct Summary: Identifiable, Sendable {
     let id: String
     let name: String
     let kind: String
@@ -39,10 +39,17 @@ struct SavedPhrase: Identifiable, Codable, Equatable {
     }
 }
 
+enum DeliveryState: String {
+    case pending, received, relayed
+}
+
 final class Library {
     let root: URL
     private var db: OpaquePointer?
     private let lock = NSRecursiveLock()
+    private struct DeliveryKey: Hashable { let id: String; let peer: String }
+    private var sending: Set<DeliveryKey> = []
+    private var pullLeases: [DeliveryKey: Date] = [:]
     private struct PageKey: Equatable {
         let kind: String, search: String, offset: Int
         let pinnedFirst: Bool
@@ -64,6 +71,21 @@ final class Library {
         sqlite3_busy_timeout(db, 3000)
         guard sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS clips(id TEXT PRIMARY KEY, name TEXT, kind TEXT, source TEXT, pinned INTEGER DEFAULT 0, data BLOB NOT NULL); CREATE TABLE IF NOT EXISTS peers(id TEXT PRIMARY KEY, card BLOB NOT NULL); CREATE TABLE IF NOT EXISTS pending(id TEXT,peer TEXT,wire BLOB NOT NULL,PRIMARY KEY(id,peer)); CREATE TABLE IF NOT EXISTS forward(id TEXT, origin TEXT, peer TEXT, wire BLOB NOT NULL, PRIMARY KEY(id,origin,peer));",nil,nil,nil)==SQLITE_OK else { throw RelayFailure.storage }
         try run("CREATE TABLE IF NOT EXISTS share_send(id TEXT, peer TEXT, PRIMARY KEY(id, peer))")
+        try run("CREATE TABLE IF NOT EXISTS private_clips(id TEXT PRIMARY KEY)")
+        try run("CREATE TABLE IF NOT EXISTS delivery_receipts(id TEXT, peer TEXT, state TEXT NOT NULL, PRIMARY KEY(id,peer))")
+        try run("CREATE TABLE IF NOT EXISTS relay_delivery_digests(id TEXT, peer TEXT, digest TEXT NOT NULL, PRIMARY KEY(id,peer))")
+        try run("CREATE TABLE IF NOT EXISTS receipt_outbox(id TEXT PRIMARY KEY, peer TEXT, digest TEXT, wire BLOB NOT NULL, UNIQUE(peer,digest))")
+        try run("""
+            CREATE TRIGGER IF NOT EXISTS clear_relay_digest AFTER DELETE ON delivery_receipts BEGIN
+                DELETE FROM relay_delivery_digests WHERE id=OLD.id AND peer=OLD.peer;
+            END
+            """)
+        try run("""
+            CREATE TRIGGER IF NOT EXISTS clear_clip_delivery AFTER DELETE ON clips BEGIN
+                DELETE FROM private_clips WHERE id=OLD.id;
+                DELETE FROM delivery_receipts WHERE id=OLD.id;
+            END
+            """)
         try run("CREATE TABLE IF NOT EXISTS hub_history(hub TEXT, id TEXT, position INTEGER NOT NULL, PRIMARY KEY(hub,id))")
         try run("CREATE INDEX IF NOT EXISTS hub_history_items ON hub_history(id,position)")
         try run("CREATE TABLE IF NOT EXISTS pairing_dates(peer TEXT PRIMARY KEY, date REAL NOT NULL)")
@@ -186,7 +208,7 @@ final class Library {
     }
     func deletePhrase(_ id: UUID) throws { try run("DELETE FROM phrases WHERE id=?", [.text(id.uuidString)]) }
     enum Value { case text(String), bytes(Data) }
-    @discardableResult private func query<T>(_ sql: String, _ args: [Value] = [], _ row: (OpaquePointer)->T) throws -> [T] {
+    @discardableResult private func query<T>(_ sql: String, _ args: [Value] = [], _ row: (OpaquePointer) throws -> T) throws -> [T] {
         lock.lock(); defer {lock.unlock()}
         var raw: OpaquePointer?
         guard sqlite3_prepare_v2(db,sql,-1,&raw,nil)==SQLITE_OK, let stmt=raw else {throw RelayFailure.storage}
@@ -203,7 +225,7 @@ final class Library {
         }
         var result:[T]=[]
         while true { switch sqlite3_step(stmt) {
-        case SQLITE_ROW: result.append(row(stmt))
+        case SQLITE_ROW: result.append(try row(stmt))
         case SQLITE_DONE: return result
         default: throw RelayFailure.storage
         } }
@@ -242,7 +264,9 @@ final class Library {
     }
 
     // Incoming messages and archives retain their original IDs for retries and acknowledgements.
-    func save(_ clip: Clip, source: String, sendToPeers: Bool = false, received: Bool = false) throws {
+    func save(_ clip: Clip, source: String, sendToPeers: Bool = false, received: Bool = false,
+              privateToDevice: Bool = false, targeted: (sender: Identity, peers: [Peer])? = nil,
+              terminalReceipt: (receipt: TerminalReceipt, peer: Peer, wire: Data)? = nil) throws {
         lock.lock(); defer {lock.unlock()}
         try run("BEGIN IMMEDIATE")
         do {
@@ -258,13 +282,31 @@ final class Library {
             if sendToPeers {
                 try run("INSERT OR IGNORE INTO share_send SELECT ?, id FROM effective_peers", [.text(id)])
             }
+            if privateToDevice || clip.deviceOnly == true || targeted != nil {
+                try run("INSERT OR IGNORE INTO private_clips VALUES(?)", [.text(id)])
+            }
+            if let targeted {
+                let allowed = try peers()
+                guard !targeted.peers.isEmpty, targeted.peers.allSatisfy(allowed.contains) else {
+                    throw RelayFailure.unauthorized
+                }
+                var targetedClip = clip
+                targetedClip.deviceOnly = true
+                for peer in targeted.peers where try pending(id, peer: peer) == nil {
+                    try queue(id, peer: peer, wire: targetedClip.sealForDelivery(from: targeted.sender, to: peer))
+                }
+            }
+            if let (receipt, peer, wire) = terminalReceipt {
+                try run("INSERT OR IGNORE INTO receipt_outbox VALUES(?,?,?,?)",
+                        [.text(receipt.id.uuidString), .text(peer.id), .text(receipt.digest), .bytes(wire)])
+            }
             try prune(protecting: [id])
             try run("COMMIT")
         } catch {try? run("ROLLBACK"); throw error}
     }
 
     @discardableResult
-    func saveCopies(_ clips: [Clip], source: String, sendToPeers: Bool = false) throws -> Set<String> {
+    func saveCopies(_ clips: [Clip], source: String, sendToPeers: Bool = false, privateToDevice: Bool = false) throws -> Set<String> {
         lock.lock(); defer { lock.unlock() }
         try run("BEGIN IMMEDIATE")
         do {
@@ -290,6 +332,9 @@ final class Library {
                 } else {
                     id = incomingID
                     try insert(clip, source: source, key: key)
+                    if privateToDevice {
+                        try run("INSERT OR IGNORE INTO private_clips VALUES(?)", [.text(id)])
+                    }
                     if let existing {
                         try run("""
                             UPDATE clips SET (expires,expiry_seconds)=
@@ -382,7 +427,7 @@ final class Library {
     func hubHistory() throws -> [HubHistoryEntry] {
         lock.lock(); defer { lock.unlock() }
         try purgeExpired()
-        let entries = try query("SELECT id,history_pinned,expires,captured FROM clipboard_history WHERE history_burn=0 ORDER BY history_pinned DESC,history_rowid DESC") { row in
+        let entries = try query("SELECT id,history_pinned,expires,captured FROM clipboard_history WHERE history_burn=0 AND id NOT IN (SELECT id FROM private_clips) ORDER BY history_pinned DESC,history_rowid DESC") { row in
             let expires = sqlite3_column_type(row, 2) == SQLITE_NULL ? nil : Date(timeIntervalSince1970: sqlite3_column_double(row, 2))
             return UUID(uuidString: self.string(row, 0)).map {
                 HubHistoryEntry(id: $0, pinned: sqlite3_column_int(row, 1) != 0, expires: expires,
@@ -395,6 +440,7 @@ final class Library {
     func hubClip(_ id: UUID) throws -> Clip {
         let data = try query("""
             SELECT data FROM clips WHERE id=? AND (expires IS NULL OR expires > unixepoch())
+            AND id NOT IN (SELECT id FROM private_clips)
             AND NOT EXISTS (
                 SELECT 1 FROM clips AS duplicate WHERE duplicate.content_key=clips.content_key
                 AND duplicate.burn=1 AND (duplicate.expires IS NULL OR duplicate.expires > unixepoch())
@@ -470,15 +516,44 @@ final class Library {
     }
 
     #if os(macOS)
+    private init(readOnly root: URL) throws {
+        self.root = root
+        guard sqlite3_open_v2(root.appendingPathComponent("history.sqlite").path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            throw RelayFailure.storage
+        }
+        sqlite3_busy_timeout(db, 3000)
+    }
+
     func macHistory(search: String = "") throws -> [Summary] {
-        lock.lock(); defer { lock.unlock() }
+        if !search.isEmpty { return try Self.scanMacHistory(in: root, for: search) }
         try purgeExpired()
-        let rows = try query("SELECT \(Self.summaryColumns) FROM clipboard_history ORDER BY history_pinned DESC, history_rowid DESC", [], summary)
-        guard !search.isEmpty else { return rows }
-        return try rows.filter { row in
-            if row.name.localizedCaseInsensitiveContains(search) { return true }
-            guard row.kind == "Text" || row.kind == "Rich text" else { return false }
-            return try readClip(row.id).text?.localizedCaseInsensitiveContains(search) == true
+        return try query("SELECT \(Self.summaryColumns) FROM clipboard_history ORDER BY history_pinned DESC, history_rowid DESC", [], summary)
+    }
+
+    @concurrent static func searchMacHistory(in root: URL, for search: String) async throws -> [Summary] {
+        try scanMacHistory(in: root, for: search)
+    }
+
+    private static func scanMacHistory(in root: URL, for search: String) throws -> [Summary] {
+        try Task.checkCancellation()
+        // A WAL reader keeps full-text scans off the connection used for clipboard writes and UI reads.
+        let reader = try Library(readOnly: root)
+        let decoder = PropertyListDecoder()
+        let matches: [Summary?] = try reader.query("""
+            SELECT \(summaryColumns), CASE WHEN kind IN ('Text', 'Rich text') THEN data END
+            FROM clipboard_history
+            """) { statement in
+            try Task.checkCancellation()
+            let row = reader.summary(statement)
+            if row.name.localizedCaseInsensitiveContains(search) { return row }
+            guard sqlite3_column_type(statement, 15) != SQLITE_NULL else { return nil }
+            let clip = try decoder.decode(Clip.self, from: reader.blob(statement, 15))
+            return clip.text?.localizedCaseInsensitiveContains(search) == true ? row : nil
+        }
+        return matches.compactMap { $0 }.sorted { first, second in
+            if first.pinned != second.pinned { return first.pinned }
+            return first.historyRank > second.historyRank
         }
     }
     #endif
@@ -537,8 +612,7 @@ final class Library {
             let size = try query("SELECT length(data) FROM clips JOIN share_send USING(id) WHERE id=? AND peer=?",
                                  [.text(id), .text(peer.id)]) { sqlite3_column_int64($0, 0) }.first
             if let size, size <= maxBytes {
-                let bytes = try Codec.pack(clip(id))
-                try queue(id, peer: peer, wire: Envelope.seal(bytes, from: me, to: peer))
+                try queue(id, peer: peer, wire: clip(id).sealForDelivery(from: me, to: peer))
                 try completeSharedSend(id, to: peer)
                 try run("COMMIT")
                 return true
@@ -763,6 +837,7 @@ final class Library {
         try run("DELETE FROM pending WHERE peer NOT IN (SELECT id FROM effective_peers)")
         try run("DELETE FROM share_send WHERE peer NOT IN (SELECT id FROM effective_peers)")
         try run("DELETE FROM forward WHERE origin NOT IN (SELECT id FROM effective_peers) OR peer NOT IN (SELECT id FROM effective_peers)")
+        try run("DELETE FROM receipt_outbox WHERE peer NOT IN (SELECT id FROM effective_peers)")
     }
     func unpair(_ peer:Peer)throws {
         lock.lock(); defer {lock.unlock()}
@@ -780,6 +855,7 @@ final class Library {
             try run("DELETE FROM pending WHERE peer=?",[.text(peer.id)])
             try run("DELETE FROM forward WHERE origin=? OR peer=?",[.text(peer.id),.text(peer.id)])
             try run("DELETE FROM share_send WHERE peer=?", [.text(peer.id)])
+            try run("DELETE FROM receipt_outbox WHERE peer=?", [.text(peer.id)])
             try run("COMMIT")
         }
         catch {try? run("ROLLBACK");throw error}
@@ -797,9 +873,111 @@ final class Library {
     }
     func pending(_ id:String,peer:Peer)throws->Data? {try query("SELECT wire FROM pending WHERE id=? AND peer=?",[.text(id),.text(peer.id)]){self.blob($0,0)}.first}
     func pendingIDs(_ peer:Peer)throws->[String] {try query("SELECT id FROM pending WHERE peer=? ORDER BY rowid LIMIT 30",[.text(peer.id)]){self.string($0,0)}}
-    func delivered(_ id: String, peer: Peer) throws {
-        try run("UPDATE clips SET shared=1 WHERE id=?", [.text(id)])
-        try run("DELETE FROM pending WHERE id=? AND peer=?", [.text(id), .text(peer.id)])
+    func deliveryStates(_ id: String) throws -> [String: DeliveryState] {
+        let rows = try query("""
+            SELECT peer, state FROM delivery_receipts WHERE id=?
+            UNION ALL SELECT peer, 'pending' FROM pending WHERE id=?
+            UNION ALL SELECT peer, 'pending' FROM share_send WHERE id=?
+            """, [.text(id), .text(id), .text(id)]) {
+                (self.string($0, 0), DeliveryState(rawValue: self.string($0, 1)) ?? .pending)
+            }
+        return Dictionary(rows, uniquingKeysWith: { $1 })
+    }
+
+    func cancelPendingDelivery(_ id: String, to peer: Peer) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let key = DeliveryKey(id: id, peer: peer.id)
+        guard !sending.contains(key), !hasPullLease(key) else { return false }
+        let args: [Value] = [.text(id), .text(peer.id)]
+        try run("BEGIN IMMEDIATE")
+        do {
+            let exists = try query("""
+                SELECT 1 FROM pending WHERE id=? AND peer=?
+                UNION ALL SELECT 1 FROM share_send WHERE id=? AND peer=?
+                """, args + args) { _ in true }.first ?? false
+            if exists {
+                try run("INSERT OR IGNORE INTO private_clips SELECT id FROM clips WHERE id=?", [.text(id)])
+                try run("DELETE FROM pending WHERE id=? AND peer=?", args)
+                try completeSharedSend(id, to: peer)
+            }
+            try run("COMMIT")
+            return exists
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+
+    private func hasPullLease(_ key: DeliveryKey) -> Bool {
+        pullLeases[key, default: .distantPast] > .now
+    }
+
+    func claimPending(_ id: String, to peer: Peer, forPull: Bool = false) throws -> Data? {
+        lock.lock(); defer { lock.unlock() }
+        let key = DeliveryKey(id: id, peer: peer.id)
+        guard !sending.contains(key), !hasPullLease(key), let wire = try pending(id, peer: peer) else { return nil }
+        if forPull {
+            pullLeases = pullLeases.filter { $0.value > .now }
+            // The requester allows eight seconds for the response before retrying.
+            pullLeases[key] = .now.addingTimeInterval(8)
+        } else {
+            sending.insert(key)
+        }
+        return wire
+    }
+
+    func releasePending(_ id: String, to peer: Peer) {
+        lock.lock(); defer { lock.unlock() }
+        sending.remove(DeliveryKey(id: id, peer: peer.id))
+    }
+
+    func delivered(_ id: String, peer: Peer, state: DeliveryState = .received) throws {
+        _ = try recordDelivery(id, peer: peer, state: state)
+    }
+    private func recordDelivery(_ id: String, peer: Peer, state: DeliveryState, terminalDigest: String? = nil) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let key = DeliveryKey(id: id, peer: peer.id)
+        try run("BEGIN IMMEDIATE")
+        do {
+            let args: [Value] = [.text(id), .text(peer.id)]
+            // A fast recipient can respond before the origin finishes recording relay acceptance.
+            if let terminalDigest, try pending(id, peer: peer).map(Codec.hash) != terminalDigest {
+                try run("""
+                    UPDATE delivery_receipts SET state='received' WHERE id=? AND peer=? AND state='relayed'
+                    AND EXISTS(SELECT 1 FROM relay_delivery_digests
+                               WHERE id=delivery_receipts.id AND peer=delivery_receipts.peer AND digest=?)
+                    """, args + [.text(terminalDigest)])
+                let changed = sqlite3_changes(db) != 0
+                if changed { try run("DELETE FROM relay_delivery_digests WHERE id=? AND peer=?", args) }
+                try run("COMMIT")
+                return changed
+            }
+            if state == .relayed, let wire = try pending(id, peer: peer) {
+                try run("INSERT OR REPLACE INTO relay_delivery_digests VALUES(?,?,?)", args + [.text(Codec.hash(wire))])
+            }
+            try run("""
+                INSERT INTO delivery_receipts SELECT id, peer, ? FROM pending WHERE id=? AND peer=?
+                ON CONFLICT(id,peer) DO UPDATE SET state=excluded.state WHERE state <> 'received'
+                """, [.text(state.rawValue)] + args)
+            try run("UPDATE clips SET shared=1 WHERE id=? AND EXISTS(SELECT 1 FROM pending WHERE id=? AND peer=?)",
+                    [.text(id)] + args)
+            try run("""
+                DELETE FROM share_send WHERE id=? AND peer=? AND EXISTS(SELECT 1 FROM pending WHERE id=? AND peer=?)
+                """, args + args)
+            try run("DELETE FROM pending WHERE id=? AND peer=?", args)
+            if state == .received { try run("DELETE FROM relay_delivery_digests WHERE id=? AND peer=?", args) }
+            try run("COMMIT")
+            pullLeases.removeValue(forKey: key)
+            return true
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+    func acceptTerminalReceipt(_ receipt: TerminalReceipt, from peer: Peer) throws -> Bool {
+        try recordDelivery(receipt.clip.uuidString, peer: peer, state: .received, terminalDigest: receipt.digest)
+    }
+    func terminalReceipts(to peer: Peer) throws -> [(id: String, wire: Data)] {
+        try query("SELECT id,wire FROM receipt_outbox WHERE peer=? ORDER BY rowid LIMIT 30", [.text(peer.id)]) {
+            (self.string($0, 0), self.blob($0, 1))
+        }
+    }
+    func removeTerminalReceipt(_ id: String, to peer: Peer) throws {
+        try run("DELETE FROM receipt_outbox WHERE id=? AND peer=?", [.text(id), .text(peer.id)])
     }
     func stageForward(_ id: String, origin: String, peer: String, wire: Data) throws {
         lock.lock()

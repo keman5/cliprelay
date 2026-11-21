@@ -34,12 +34,14 @@ final class Exchange {
     private static let pairingFlag: UInt32 = 1 << 31
     private let forwardingAllowed: () -> Bool
     private let directoryAllowed: () -> Bool
+    private let transferAllowed: () -> Bool
     private static let maxLANFrame = Envelope.maxWire + 1024
     private struct Forward: Codable {
         let id: UUID
         let wire: Data
     }
     var didReceive: (() -> Void)?
+    var didUpdateDelivery: (() -> Void)?
     init(_ library: Library, _ me: Identity, mode: Mode = .legacy, forwardingAllowed: @escaping () -> Bool = {
         #if os(macOS)
         UserDefaults.standard.bool(forKey: "relay.lanForwarding")
@@ -52,12 +54,13 @@ final class Exchange {
         #else
         false
         #endif
-    }) {
+    }, transferAllowed: @escaping () -> Bool = { true }) {
         self.library = library
         self.me = me
         self.mode = mode
         self.forwardingAllowed = forwardingAllowed
         self.directoryAllowed = directoryAllowed
+        self.transferAllowed = transferAllowed
     }
     func start(port: UInt16=0) throws {
         let preferred = UInt16(me.peer.id.prefix(4), radix: 16) ?? 0
@@ -329,7 +332,7 @@ final class Exchange {
     private func receiveLAN(_ wire: Data) throws -> Data {
         let envelope = try Codec.read(Envelope.self, wire)
         if mode == .hub {
-            guard wire.count < 4096 else { throw RelayFailure.invalid }
+            guard transferAllowed(), wire.count < 4096 else { throw RelayFailure.invalid }
             let (body, peer) = try envelope.open(me, peers: library.directPeers(), purpose: "history-request")
             let request = try Codec.read(HistoryRequest.self, body)
             let response: Data
@@ -347,18 +350,26 @@ final class Exchange {
             let update = try library.publishedDirectory(nonce, requester: requester.id)
             return try Envelope.seal(Codec.pack(update), from: me, to: requester, purpose: "directory-update")
         }
+        guard transferAllowed() else { throw RelayFailure.unavailable }
         let peers = try library.peers()
+        if let receipt = try receiveTerminalReceipt(envelope, peers: peers) {
+            return try Envelope.seal(Data(receipt.id.uuidString.utf8), from: me, to: receipt.peer, purpose: "terminal-receipt-ack")
+        }
         if wire.count < 4096,
            let (receipt, peer) = try? envelope.open(me, peers: peers, purpose: "lan-pull") {
             if !receipt.isEmpty {
                 guard let delivered = UUID(uuidString: String(decoding: receipt, as: UTF8.self)) else { throw RelayFailure.invalid }
                 try library.delivered(delivered.uuidString, peer: peer)
             }
-            if let id = try library.pendingIDs(peer).first,
-               let item = try library.pending(id, peer: peer) { return item }
-            if let id = try library.sharedSends(peer).first,
-               try library.prepareSharedSend(id, from: me, to: peer),
-               let item = try library.pending(id, peer: peer) { return item }
+            for id in try library.pendingIDs(peer) {
+                guard transferAllowed() else { break }
+                if let item = try library.claimPending(id, to: peer, forPull: true) { return item }
+            }
+            for id in try library.sharedSends(peer) {
+                guard transferAllowed() else { break }
+                if try library.prepareSharedSend(id, from: me, to: peer),
+                   let item = try library.claimPending(id, to: peer, forPull: true) { return item }
+            }
             return try Envelope.seal(Data(), from: me, to: peer, purpose: "lan-pull-done")
         }
         if wire.count < 4096,
@@ -375,12 +386,13 @@ final class Exchange {
             let forward = try Codec.read(Forward.self, data)
             guard forward.wire.count <= Envelope.maxWire else { throw RelayFailure.tooLarge }
             let inner = try Codec.read(Envelope.self, forward.wire)
-            let (body, origin) = try inner.open(me, peers: peers)
-            let clip = try Codec.read(Clip.self, body)
-            guard clip.id == forward.id else { throw RelayFailure.invalid }
-            try library.save(clip, source: origin.name, received: true)
-            didReceive?()
-            return try Envelope.seal(Data(clip.id.uuidString.utf8), from: me, to: hub, purpose: "relay-delivery-ack")
+            if try receiveTerminalReceipt(inner, peers: peers, expectedID: forward.id) == nil {
+                let (body, origin) = try inner.open(me, peers: peers)
+                let clip = try Codec.read(Clip.self, body)
+                guard clip.id == forward.id else { throw RelayFailure.invalid }
+                try saveRelayed(clip, wire: forward.wire, from: origin)
+            }
+            return try Envelope.seal(Data(forward.id.uuidString.utf8), from: me, to: hub, purpose: "relay-delivery-ack")
         }
         guard forwardingAllowed() else { throw RelayFailure.unauthorized }
         let (data, sender) = try envelope.open(me, peers: peers, purpose: "forward")
@@ -417,6 +429,28 @@ final class Exchange {
         didReceive?()
         return clip
     }
+    private func saveRelayed(_ clip: Clip, wire: Data, from peer: Peer) throws {
+        var terminalReceipt: (TerminalReceipt, Peer, Data)?
+        if clip.relayReceiptRequested == true {
+            let receipt = TerminalReceipt(id: UUID(), clip: clip.id, digest: Codec.hash(wire))
+            let reply = try Envelope.seal(Codec.pack(receipt), from: me, to: peer, purpose: TerminalReceipt.purpose)
+            terminalReceipt = (receipt, peer, reply)
+        }
+        try library.save(clip, source: peer.name, received: true, terminalReceipt: terminalReceipt)
+        didReceive?()
+    }
+    private func receiveTerminalReceipt(_ envelope: Envelope, peers: [Peer], expectedID: UUID? = nil) throws -> (id: UUID, peer: Peer)? {
+        guard envelope.ciphertext.count < 4096,
+              let (body, peer) = try? envelope.open(me, peers: peers, purpose: TerminalReceipt.purpose) else { return nil }
+        guard let receipt = try? Codec.read(TerminalReceipt.self, body),
+              expectedID == nil || receipt.id == expectedID,
+              receipt.digest.utf8.count == 64,
+              receipt.digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw RelayFailure.invalid
+        }
+        if try library.acceptTerminalReceipt(receipt, from: peer) { didUpdateDelivery?() }
+        return (receipt.id, peer)
+    }
     private func write(_ data:Data,on c:NWConnection,pairing:Bool,done:@escaping (NWError?)->Void) {
         var n=(UInt32(data.count) | (pairing ? Self.pairingFlag : 0)).bigEndian
         c.send(content:withUnsafeBytes(of:&n){Data($0)}+data,completion:.contentProcessed(done))
@@ -434,6 +468,7 @@ final class Exchange {
         }
     }
     func sendLAN(_ wire:Data,id:String,to peer:Peer,at address:NWEndpoint?=nil,purpose:String="ack") async throws {
+        guard transferAllowed() else { throw RelayFailure.unavailable }
         guard let endpoint=address ?? endpoint(for:peer) else {throw RelayFailure.unavailable}
         let ack = try await exchange(wire, endpoint: endpoint, pairing: false, timeout: purpose == "ack" && wire.count < 65_536 ? 2 : 8)
         let (receipt,_) = try Codec.read(Envelope.self,ack).open(me,peers:[peer],purpose:purpose)
@@ -445,6 +480,7 @@ final class Exchange {
         var receipt = Data()
         for count in 0..<30 {
             try Task.checkCancellation()
+            guard transferAllowed() else { throw RelayFailure.unavailable }
             let request = try Envelope.seal(receipt, from: me, to: peer, purpose: "lan-pull")
             let wire = try await exchange(request, endpoint: endpoint, pairing: false, timeout: 8)
             let reply = try Codec.read(Envelope.self, wire)
@@ -464,29 +500,32 @@ final class Exchange {
         if endpoint(for: hub) == nil { try await Task.sleep(for: .seconds(1)) }
         guard let endpoint = endpoint(for: hub) else { throw RelayFailure.unavailable }
 
-        func request<Value: Codable>(_ type: Value.Type, id: UUID? = nil) async throws -> Value {
-            try Task.checkCancellation()
-            let request = HistoryRequest(nonce: UUID(), id: id)
-            let wire = try Envelope.seal(Codec.pack(request), from: me, to: hub, purpose: "history-request")
-            let reply = try await exchange(wire, endpoint: endpoint, pairing: false, timeout: id == nil ? 3 : 8)
-            try Task.checkCancellation()
-            let (body, _) = try Codec.read(Envelope.self, reply).open(me, peers: [hub], purpose: "history-response")
-            let response = try Codec.read(HistoryResponse<Value>.self, body)
-            guard response.nonce == request.nonce else { throw RelayFailure.unauthorized }
-            return response.value
-        }
-
-        let history = try await request([HubHistoryEntry].self)
+        let history = try await requestHistory([HubHistoryEntry].self, from: hub, at: endpoint)
         let ids = Set(history.map(\.id))
         guard ids.count == history.count else { throw RelayFailure.invalid }
         let cached = try library.existingHistoryIDs()
         for entry in history where !cached.contains(entry.id.uuidString) {
-            let clip = try await request(Clip.self, id: entry.id)
+            let clip = try await requestHistory(Clip.self, from: hub, at: endpoint, id: entry.id)
             guard clip.id == entry.id else { throw RelayFailure.invalid }
             try library.cacheHubClip(clip, entry: entry, from: hub)
         }
         try library.applyHubHistory(history, from: hub)
     }
+    func requestHistory<Value: Codable>(_ type: Value.Type, from hub: Peer, at endpoint: NWEndpoint,
+                                    id: UUID? = nil) async throws -> Value {
+        guard try library.directPeers().contains(where: { $0.id == hub.id }) else { throw RelayFailure.unauthorized }
+        try Task.checkCancellation()
+        guard transferAllowed() else { throw RelayFailure.unavailable }
+        let request = HistoryRequest(nonce: UUID(), id: id)
+        let wire = try Envelope.seal(Codec.pack(request), from: me, to: hub, purpose: "history-request")
+        let reply = try await exchange(wire, endpoint: endpoint, pairing: false, timeout: id == nil ? 3 : 8)
+        try Task.checkCancellation()
+        let (body, _) = try Codec.read(Envelope.self, reply).open(me, peers: [hub], purpose: "history-response")
+        let response = try Codec.read(HistoryResponse<Value>.self, body)
+        guard response.nonce == request.nonce else { throw RelayFailure.unauthorized }
+        return response.value
+    }
+
     private func exchange(_ wire: Data, endpoint: NWEndpoint, pairing: Bool, timeout: TimeInterval) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let c=NWConnection(to:endpoint,using:.tcp)
@@ -517,32 +556,46 @@ final class Exchange {
         try library.save(clip,source:"Local")
         for peer in try library.peers() {
             if try library.pending(clip.id.uuidString,peer:peer) == nil {
-                try library.queue(clip.id.uuidString,peer:peer,wire:Envelope.seal(Codec.pack(clip),from:me,to:peer))
+                try library.queue(clip.id.uuidString, peer: peer, wire: clip.sealForDelivery(from: me, to: peer))
             }
         }
     }
-    @discardableResult func flush(to peer:Peer, cloud:Cloud?, address:NWEndpoint?=nil, only idFilter:String?=nil) async throws -> [String] {
+    func queue(_ clip: Clip, to peers: [Peer]) throws {
+        try library.save(clip, source: "Local", targeted: (me, peers))
+    }
+
+    @discardableResult func flush(to peer: Peer, cloud: Cloud?, address: NWEndpoint? = nil, only idFilter: String? = nil) async throws -> [String] {
         guard try library.peers().contains(peer) else { throw RelayFailure.unauthorized }
-        var routes:[String]=[]
-        for id in try idFilter.map({[$0]}) ?? library.pendingIDs(peer) {
-            guard let wire=try library.pending(id,peer:peer) else {continue}
-            do {try await sendLAN(wire,id:id,to:peer,at:address);routes.append("LAN")}
-            catch {
+        var routes: [String] = []
+        for id in try idFilter.map({ [$0] }) ?? library.pendingIDs(peer) {
+            guard transferAllowed() else { break }
+            guard let wire = try library.claimPending(id, to: peer) else { continue }
+            defer { library.releasePending(id, to: peer) }
+            let state: DeliveryState
+            do {
+                try await sendLAN(wire, id: id, to: peer, at: address)
+                routes.append("LAN")
+                state = .received
+            } catch {
+                guard transferAllowed() else { break }
                 if address == nil, await relay(wire, id: id, destination: peer) {
                     routes.append("LAN Relay")
                 } else {
-                    guard let cloud else {throw error}
-                    try await cloud.put(wire,peer.box,id);routes.append("Cloud")
+                    guard transferAllowed() else { break }
+                    guard let cloud else { throw error }
+                    try await cloud.put(wire, peer.box, id)
+                    routes.append("Cloud")
                 }
+                state = .relayed
             }
-            try library.delivered(id,peer:peer)
+            try library.delivered(id, peer: peer, state: state)
         }
         return routes
     }
     private func relay(_ wire: Data, id: String, destination: Peer) async -> Bool {
-        let local = Set(discovered())
         guard let peers = try? library.peers() else { return false }
-        for hub in peers where hub.id != destination.id && local.contains(hub.service) {
+        for hub in peers where hub.id != destination.id && endpoint(for: hub) != nil {
+            guard transferAllowed() else { return false }
             do {
                 try await sendRelay(wire, id: id, via: hub)
                 return true
@@ -550,11 +603,31 @@ final class Exchange {
         }
         return false
     }
+    func flushTerminalReceipts(to peer: Peer, cloud: Cloud?, address: NWEndpoint? = nil) async throws {
+        for receipt in try library.terminalReceipts(to: peer) {
+            guard transferAllowed() else { return }
+            do {
+                try await sendLAN(receipt.wire, id: receipt.id, to: peer, at: address, purpose: "terminal-receipt-ack")
+            } catch {
+                guard transferAllowed() else { return }
+                if address == nil, await relay(receipt.wire, id: receipt.id, destination: peer) {
+                    try library.removeTerminalReceipt(receipt.id, to: peer)
+                    continue
+                } else {
+                    guard transferAllowed() else { return }
+                    guard let cloud else { throw error }
+                    try await cloud.put(receipt.wire, peer.box, receipt.id)
+                }
+            }
+            try library.removeTerminalReceipt(receipt.id, to: peer)
+        }
+    }
     @discardableResult func flushForwarded(to peer: Peer, cloud: Cloud?, address: NWEndpoint? = nil) async throws -> [String] {
         guard forwardingAllowed() else { return [] }
         guard try library.peers().contains(peer) else { throw RelayFailure.unauthorized }
         var routes: [String] = []
         for job in try library.forwards(to: peer) {
+            guard transferAllowed() else { break }
             guard let wire = try library.forward(job.id, origin: job.origin, to: peer) else { continue }
             do {
                 guard let uuid = UUID(uuidString: job.id) else { throw RelayFailure.invalid }
@@ -562,6 +635,7 @@ final class Exchange {
                 try await sendLAN(packet, id: job.id, to: peer, at: address, purpose: "relay-delivery-ack")
                 routes.append("LAN")
             } catch {
+                guard transferAllowed() else { break }
                 guard let cloud else { throw error }
                 try await cloud.put(wire, peer.box, job.id)
                 routes.append("Cloud")
@@ -573,16 +647,24 @@ final class Exchange {
     func pull(_ cloud:Cloud) async throws -> Int {
         var count=0, cursor:String?
         repeat {
+            guard transferAllowed() else { return count }
             let page=try await cloud.list(me,cursor)
             for id in page.ids {
+                guard transferAllowed() else { return count }
                 guard let uuid=UUID(uuidString:id), let wire = try await cloud.read(me,id) else { continue }
                 let peers = try library.peers()
-                guard let envelope = try? Codec.read(Envelope.self,wire),
-                      let (data, peer) = try? envelope.open(me,peers:peers),
+                guard let envelope = try? Codec.read(Envelope.self,wire) else { continue }
+                do {
+                    if try receiveTerminalReceipt(envelope, peers: peers, expectedID: uuid) != nil {
+                        try await cloud.remove(me, id)
+                        continue
+                    }
+                } catch RelayFailure.invalid { continue }
+                guard let (data, peer) = try? envelope.open(me,peers:peers),
                       let clip = try? Codec.read(Clip.self,data), uuid == clip.id,
                       (try? clip.validate()) != nil else { continue }
-                try library.save(clip,source:peer.name,received:true)
-                try await cloud.remove(me,id);count+=1;didReceive?()
+                try saveRelayed(clip, wire: wire, from: peer)
+                try await cloud.remove(me,id);count+=1
             }
             cursor=page.cursor
         } while cursor != nil
@@ -608,7 +690,14 @@ struct Cloud {
         var req=URLRequest(url:url,timeoutInterval:30);req.httpMethod=method;req.httpBody=body
         req.setValue("Bearer "+token,forHTTPHeaderField:"Authorization")
         req.setValue(reader,forHTTPHeaderField:"X-ClipRelay-Reader")
-        let (data,response)=try await Self.session.data(for:req)
+        let data: Data, response: URLResponse
+        do {
+            (data, response) = try await Self.session.data(for: req)
+        } catch let error as URLError where error.code == .networkConnectionLost || error.code == .timedOut {
+            // Mailbox writes use immutable IDs, so repeating a request after a lost response is safe.
+            try Task.checkCancellation()
+            (data, response) = try await Self.session.data(for: req)
+        }
         guard let http=response as? HTTPURLResponse else { throw RelayFailure.unavailable }
         if http.statusCode == 404 && method == "GET" && id != nil { throw HTTPFailure.missing }
         guard (200..<300).contains(http.statusCode) else { throw RelayFailure.unavailable }

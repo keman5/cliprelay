@@ -4,6 +4,7 @@ import Network
 import CryptoKit
 #if os(macOS)
 import AppKit
+import LocalAuthentication
 #endif
 
 enum QA {
@@ -27,6 +28,9 @@ enum QA {
         }
         var stage = "archive and history"
         do {
+            #if os(macOS)
+            try await testHistoryAuthentication()
+            #endif
             try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
             let me=try Identity(secret:Curve25519.KeyAgreement.PrivateKey().rawRepresentation,name:sender ? "QA Mac":"QA iPhone")
             try ClipArchive.selfCheck(in: dir.appendingPathComponent("archive-tests"))
@@ -81,6 +85,11 @@ enum QA {
                 if sender {
                     #if os(macOS)
                     try await recordClipboardFixtures(file: file, image: image, from: ex, in: dir)
+                    let captures = try lib.page()
+                    guard let copied = captures.first(where: { $0.name == "Copied.txt" }),
+                          let screenshot = captures.first(where: { $0.name == "public.png" }),
+                          try lib.clip(copied.id).bytes == file, try lib.clip(screenshot.id).bytes == image
+                    else { throw RelayFailure.invalid }
                     #endif
                     let pinned = Clip.text(newest)
                     try lib.save(pinned, source: "QA")
@@ -104,18 +113,18 @@ enum QA {
                     let pinnedID = try String(contentsOf: dir.appendingPathComponent("hub-history"), encoding: .utf8)
                     try await ex.pullHistory(from: peer)
                     let rows = try lib.page(pinnedFirst: true) + lib.page(offset: 30, pinnedFirst: true)
-                    guard rows.count == 39, rows.first?.id == pinnedID, rows.first?.fromHub == true,
+                    guard rows.count == 37, rows.first?.id == pinnedID, rows.first?.fromHub == true,
                           !rows.contains(where: { $0.name == privateClip.name }),
-                          let copied = rows.first(where: { $0.name == "Copied.txt" }),
-                          let screenshot = rows.first(where: { $0.name == "public.png" }),
-                          try lib.clip(copied.id).bytes == file, try lib.clip(screenshot.id).bytes == image,
+                          !rows.contains(where: { $0.name == "Copied.txt" || $0.name == "public.png" }),
+                          let screenshot = rows.first(where: { $0.name == "Mac.png" }),
+                          try lib.clip(screenshot.id).bytes == fixtures[1].bytes,
                           let binary = rows.first(where: { $0.name == "Mac.bin" }),
                           try lib.clip(binary.id).bytes == fixtures.last?.bytes else { throw RelayFailure.invalid }
                     try write("verified-first", "ready")
                     try await wait { FileManager.default.fileExists(atPath: dir.appendingPathComponent("hub-updated").path) }
                     try await ex.pullHistory(from: peer)
                     try await ex.pullHistory(from: peer)
-                    guard try lib.recordCount(kind: "") == 39, try lib.page(pinnedFirst: true).first?.name == "New history",
+                    guard try lib.recordCount(kind: "") == 37, try lib.page(pinnedFirst: true).first?.name == "New history",
                           (try? lib.clip(pinnedID)) == nil, try lib.clip(local.id.uuidString).text == local.text,
                           try lib.usage().jobs == 0 else { throw RelayFailure.invalid }
                     try write("verified-update", "ready")
@@ -142,14 +151,29 @@ enum QA {
             stage = "cloud upload and delivery"
             try ex.queue(attachment)
             let disconnected=NWEndpoint.hostPort(host:"127.0.0.1",port:1)
-            guard try await ex.flush(to:peer,cloud:cloud,address:disconnected)==["Cloud"] else {throw RelayFailure.invalid}
-            for _ in 0..<30 {
-                if try await ex.pull(cloud)>0 {break}
-                try await Task.sleep(nanoseconds:500_000_000)
+            let attachmentID = attachment.id.uuidString
+            guard try await ex.flush(to:peer,cloud:cloud,address:disconnected)==["Cloud"],
+                  try Library(lib.root).deliveryStates(attachmentID) == [peer.id: .relayed] else {
+                throw RelayFailure.invalid
             }
+            stage = "cloud terminal receipt"
             let expected=sender ? "ios.bin":"mac.bin"
+            let receiptDeadline = ContinuousClock.now + .seconds(120)
+            repeat {
+                _ = try await ex.pull(cloud)
+                try await ex.flushTerminalReceipts(to: peer, cloud: cloud, address: disconnected)
+                if try lib.deliveryStates(attachmentID) == [peer.id: .received],
+                   try lib.page().contains(where: { $0.name == expected && $0.source == peer.name }) { break }
+                try await Task.sleep(nanoseconds:500_000_000)
+            } while ContinuousClock.now < receiptDeadline
+            stage = "cloud incoming file integrity"
             guard let row=try lib.page().first(where:{$0.name==expected && $0.source==peer.name}),
                   try lib.clip(row.id).bytes==Data(repeating:sender ? 66:65,count:Clip.limit) else {throw RelayFailure.invalid}
+            stage = "persistent cloud terminal receipt"
+            guard try Library(lib.root).deliveryStates(attachmentID) == [peer.id: .received] else { throw RelayFailure.invalid }
+            stage = "cloud return receipt queue cleanup"
+            guard try lib.terminalReceipts(to: peer).isEmpty else { throw RelayFailure.invalid }
+            stage = "cloud inbox cleanup"
             guard try await cloud.list(me,nil).ids.isEmpty else {throw RelayFailure.invalid}
             let poison = "00000000-0000-0000-0000-000000000000"
             stage = "mailbox isolation"
@@ -168,10 +192,19 @@ enum QA {
             stage = "three-node relay and pairing"
             try await testForwarding(in: dir.appendingPathComponent("forwarding"))
             #endif
-            try write("result","PASS direct duplex, 10 MB cloud duplex, inbox cleanup, integrity, pagination and archive")
+            try write("result","PASS direct duplex, 10 MB cloud duplex and terminal receipts, inbox cleanup, integrity, pagination and archive")
         } catch {try? write("result","FAIL "+stage+" · "+String(describing:error))}
     }
     #if os(macOS)
+    @MainActor private static func testHistoryAuthentication() async throws {
+        let reason = "Verify to export clipboard history"
+        guard try await MacHistoryAuthentication.verify(reason, required: false, evaluate: { _ in throw RelayFailure.invalid }),
+              try await MacHistoryAuthentication.verify(reason, required: true, evaluate: { _ in true }),
+              try await !MacHistoryAuthentication.verify(reason, required: true, evaluate: { _ in false }),
+              try await !MacHistoryAuthentication.verify(reason, required: true, evaluate: { _ in throw LAError(.userCancel) })
+        else { throw RelayFailure.invalid }
+    }
+
     @MainActor private static func recordClipboardFixtures(file: Data, image: Data, from exchange: Exchange, in dir: URL) async throws {
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
@@ -361,9 +394,43 @@ enum QA {
               try destination.library.page().isEmpty else { throw RelayFailure.invalid }
         guard try await hub.flushForwarded(to: destination.me.peer, cloud: nil, address: .hostPort(host: "127.0.0.1", port: 48234)) == ["LAN"],
               try destination.library.clip(id).bytes == clip.bytes,
-              try persisted.forwards(to: destination.me.peer).isEmpty else { throw RelayFailure.invalid }
-        try sender.library.pair(hub.me.peer)
+              try persisted.forwards(to: destination.me.peer).isEmpty,
+              try destination.library.terminalReceipts(to: sender.me.peer).isEmpty else { throw RelayFailure.invalid }
+        try sender.library.pair(hub.me.peer, address: "127.0.0.1:48233")
+        try sender.library.pair(destination.me.peer)
+        let confirmedClip = Clip.text("Terminal receipt through offline LAN origin")
+        let confirmedID = confirmedClip.id.uuidString
+        try sender.queue(confirmedClip, to: [destination.me.peer])
+        guard let confirmedWire = try sender.library.pending(confirmedID, peer: destination.me.peer) else { throw RelayFailure.invalid }
+        guard try await sender.flush(to: destination.me.peer, cloud: nil, only: confirmedID) == ["LAN Relay"],
+              try sender.library.deliveryStates(confirmedID) == [destination.me.peer.id: .relayed] else { throw RelayFailure.invalid }
+        let wrongDigest = TerminalReceipt(id: UUID(), clip: confirmedClip.id, digest: String(repeating: "0", count: 64))
+        let wrongPeer = TerminalReceipt(id: UUID(), clip: confirmedClip.id, digest: Codec.hash(confirmedWire))
+        guard try !sender.library.acceptTerminalReceipt(wrongDigest, from: destination.me.peer),
+              try !sender.library.acceptTerminalReceipt(wrongPeer, from: hub.me.peer),
+              try sender.library.deliveryStates(confirmedID) == [destination.me.peer.id: .relayed],
+              try await hub.flushForwarded(to: destination.me.peer, cloud: nil,
+                                          address: .hostPort(host: "127.0.0.1", port: 48234)) == ["LAN"] else { throw RelayFailure.invalid }
+        let resumed = Exchange(try Library(destination.library.root), destination.me)
+        guard let savedReceipt = try resumed.library.terminalReceipts(to: sender.me.peer).first,
+              try sender.library.deliveryStates(confirmedID) == [destination.me.peer.id: .relayed] else { throw RelayFailure.invalid }
+        let originAddress = NWEndpoint.hostPort(host: "127.0.0.1", port: 48236)
+        let failed: Void? = try? await resumed.flushTerminalReceipts(to: sender.me.peer, cloud: nil, address: originAddress)
+        guard failed == nil, try resumed.library.terminalReceipts(to: sender.me.peer).count == 1 else { throw RelayFailure.invalid }
+        try resumed.library.setLANAddress("127.0.0.1:48233", peer: hub.me.peer)
+        try await resumed.flushTerminalReceipts(to: sender.me.peer, cloud: nil)
+        guard try resumed.library.terminalReceipts(to: sender.me.peer).isEmpty,
+              try persisted.forwards(to: sender.me.peer).map(\.id) == [savedReceipt.id],
+              try sender.library.deliveryStates(confirmedID) == [destination.me.peer.id: .relayed] else { throw RelayFailure.invalid }
+        try sender.start(port: 48236)
+        for replay in [false, true] {
+            if replay { try await resumed.sendRelay(savedReceipt.wire, id: savedReceipt.id, via: hub.me.peer, at: lanAddress) }
+            guard try await hub.flushForwarded(to: sender.me.peer, cloud: nil, address: originAddress) == ["LAN"],
+                  try Library(sender.library.root).deliveryStates(confirmedID) == [destination.me.peer.id: .received],
+                  try persisted.forwards(to: sender.me.peer).isEmpty else { throw RelayFailure.invalid }
+        }
         print("QA delivered through hub")
+        try sender.library.unpair(destination.me.peer)
         try destination.library.unpair(sender.me.peer)
         for client in [sender, destination] {
             try client.library.chooseDirectory(hub.me.peer.id)
@@ -376,6 +443,47 @@ enum QA {
         try sender.queue(groupClip)
         guard try await sender.flush(to: destination.me.peer, cloud: nil, address: .hostPort(host: "127.0.0.1", port: 48234)) == ["LAN"],
               try destination.library.clip(groupClip.id.uuidString).bytes == groupClip.bytes else { throw RelayFailure.invalid }
+        let targeted = Clip.text("Only the selected device")
+        try sender.library.pair(disabled.me.peer)
+        try disabled.library.pair(sender.me.peer, address: "127.0.0.1:48236")
+        try sender.queue(targeted, to: [destination.me.peer])
+        let targetedID = targeted.id.uuidString
+        guard try sender.library.deliveryStates(targetedID) == [destination.me.peer.id: .pending],
+              try await disabled.pullLAN(from: sender.me.peer) == 0 else {
+            throw RelayFailure.invalid
+        }
+        // Cancel a separate item while its device is offline.
+        let offline = try device("Offline")
+        try sender.library.pair(offline.me.peer)
+        let offlineClip = Clip.text("Offline device cancellation")
+        let offlineID = offlineClip.id.uuidString
+        try sender.queue(offlineClip, to: [offline.me.peer])
+        guard try sender.library.cancelPendingDelivery(offlineID, to: offline.me.peer),
+              try Library(sender.library.root).deliveryStates(offlineID).isEmpty,
+              try await sender.flush(to: destination.me.peer, cloud: nil,
+                                     address: .hostPort(host: "127.0.0.1", port: 48234), only: targetedID) == ["LAN"],
+              try sender.library.deliveryStates(targetedID) == [destination.me.peer.id: .received],
+              try destination.library.clip(targetedID).text == targeted.text,
+              (try? disabled.library.clip(targetedID)) == nil,
+              !((try destination.library.hubHistory()).contains { $0.id == targeted.id }) else { throw RelayFailure.invalid }
+
+        // The history listener shares the sender's persistent library and applies the same visibility rules.
+        let historyAddress = NWEndpoint.hostPort(host: "127.0.0.1", port: 48237)
+        let historyServer = Exchange(try Library(sender.library.root), sender.me, mode: .hub)
+        try historyServer.start(port: 48237)
+        let pausedServer = Exchange(historyServer.library, sender.me, mode: .hub, transferAllowed: { false })
+        let pausedAddress = NWEndpoint.hostPort(host: "127.0.0.1", port: 48238)
+        try pausedServer.start(port: 48238)
+        try await Task.sleep(for: .milliseconds(350))
+        let visible = try await disabled.requestHistory([HubHistoryEntry].self, from: sender.me.peer, at: historyAddress)
+        guard visible.contains(where: { $0.id == groupClip.id }),
+              !visible.contains(where: { $0.id == targeted.id || $0.id == offlineClip.id }),
+              (try? await disabled.requestHistory(Clip.self, from: sender.me.peer, at: historyAddress, id: targeted.id)) == nil,
+              (try? await disabled.requestHistory(Clip.self, from: sender.me.peer, at: historyAddress, id: offlineClip.id)) == nil,
+              (try? await disabled.requestHistory([HubHistoryEntry].self, from: sender.me.peer, at: pausedAddress)) == nil,
+              (try? await disabled.requestHistory(Clip.self, from: sender.me.peer, at: pausedAddress, id: groupClip.id)) == nil else {
+            throw RelayFailure.invalid
+        }
         let old = try hub.library.publishedDirectory(UUID(), requester: sender.me.peer.id)
         try hub.library.unpair(destination.me.peer)
         try await sender.refreshDirectory(at: lanAddress)

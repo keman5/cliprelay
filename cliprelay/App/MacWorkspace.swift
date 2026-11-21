@@ -56,14 +56,16 @@ struct MacWorkspace: View {
 
     @ObservedObject var model: Model
     @State private var page: Page
+    @Binding private var requestedPage: Page?
     @State private var keyboardNavigation = false
     @AppStorage("clipboard.sendAutomatically") private var automaticSend = true
     @Environment(\.colorScheme) private var scheme
     private var palette: MacPalette { MacPalette(scheme) }
 
-    init(model: Model, initialPage: Page = .history) {
+    init(model: Model, initialPage: Page = .history, requestedPage: Binding<Page?> = .constant(nil)) {
         self.model = model
         _page = State(initialValue: initialPage)
+        _requestedPage = requestedPage
     }
 
     var body: some View {
@@ -79,6 +81,11 @@ struct MacWorkspace: View {
         .tint(palette.accent)
         .focusEffectDisabled(!keyboardNavigation)
         .background(MacWorkspaceFocus(keyboardNavigation: $keyboardNavigation))
+        .onChange(of: requestedPage, initial: true) {
+            guard let requestedPage else { return }
+            page = requestedPage
+            self.requestedPage = nil
+        }
     }
 
     private var sidebar: some View {
@@ -157,7 +164,24 @@ struct MacWorkspace: View {
 
     @ViewBuilder private var content: some View {
         switch page {
-        case .history: MacHistoryGate { MacHistory(model: model) }
+        case .history:
+            VStack(spacing: 0) {
+                if model.peers.isEmpty {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Connect your first device").font(.system(size: 13, weight: .semibold))
+                            Text("Pair a device to send clips. You can keep using history on this Mac.")
+                                .font(.system(size: 12)).foregroundStyle(palette.secondary)
+                        }
+                        Spacer()
+                        Button("Connect a device") { page = .devices }
+                    }
+                    .padding(12)
+                    .background(palette.raised)
+                    Divider()
+                }
+                MacHistoryGate { MacHistory(model: model) }
+            }
         case .devices: MacDevicesPanel(model: model)
         case .general: MacSettingsPanel(model: model, group: .general)
         case .sync: MacSettingsPanel(model: model, group: .sync)
@@ -170,7 +194,7 @@ struct MacWorkspace: View {
 
 /// Keeps AppKit from assigning a control on presentation while leaving its key
 /// view loop and SwiftUI's own key handlers in charge of navigation.
-private struct MacWorkspaceFocus: NSViewRepresentable {
+struct MacWorkspaceFocus: NSViewRepresentable {
     @Binding var keyboardNavigation: Bool
 
     func makeNSView(context: Context) -> FocusView {
@@ -276,9 +300,12 @@ struct MacAppearance: ViewModifier {
 }
 
 extension Model {
-    var macLANConnected: Bool {
+    var macNearbyPeers: [Peer] {
+        guard ready else { return [] }
         let discovered = Set(transfer?.discovered() ?? [])
-        return ready && peers.contains { discovered.contains($0.service) }
+        return peers.filter { discovered.contains($0.service) }
     }
+
+    var macLANConnected: Bool { !macNearbyPeers.isEmpty }
 }
 #endif

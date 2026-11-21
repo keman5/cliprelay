@@ -27,14 +27,21 @@ import VisionKit
     #if os(macOS)
     @Published private(set) var menuRows: [Summary] = []
     @Published private(set) var macFeedback: MacActionFeedback?
+    @Published var macClipboardReport = ""
+    @Published private(set) var macPauseUntil: Date?
+    private let clipboardSettings: UserDefaults
     let macCopyConfirmation = PassthroughSubject<String, Never>()
     private var macFeedbackTask: Task<Void, Never>?
     private var nextAutomaticSync = Date.distantPast
     private var syncRequested = false
     private var captureTimer: Timer?
-    private var changeCount = NSPasteboard.general.changeCount
+    private var changeCount = 0
     #endif
-    init() {
+    init(clipboardSettings: UserDefaults = .standard) {
+        #if os(macOS)
+        self.clipboardSettings = clipboardSettings
+        macPauseUntil = clipboardSettings.object(forKey: "clipboard.pauseUntil") as? Date
+        #endif
         #if DEBUG
         if QA.active {return}
         #if targetEnvironment(simulator)
@@ -54,7 +61,16 @@ import VisionKit
             #else
             let name=UIDevice.current.name
             #endif
-            let x=Exchange(try Library(Library.directory()),try Identity.load(name:name));transfer=x
+            #if os(macOS)
+            changeCount = NSPasteboard.general.changeCount
+            let x = Exchange(try Library(Library.directory()), try Identity.load(name: name), transferAllowed: {
+                guard let until = clipboardSettings.object(forKey: "clipboard.pauseUntil") as? Date else { return true }
+                return until <= .now
+            })
+            #else
+            let x = Exchange(try Library(Library.directory()), try Identity.load(name: name))
+            #endif
+            transfer = x
             x.didReceive = { [weak self] in
                 Task { @MainActor in
                     self?.reload()
@@ -64,6 +80,9 @@ import VisionKit
                     }
                     #endif
                 }
+            }
+            x.didUpdateDelivery = { [weak self] in
+                Task { @MainActor in self?.reload() }
             }
             #if os(iOS)
             reload()
@@ -115,8 +134,8 @@ import VisionKit
     func save(_ clips: [Clip]) throws {
         guard let library else { throw RelayFailure.storage }
         #if os(macOS)
-        let send = UserDefaults.standard.object(forKey: "clipboard.sendAutomatically") as? Bool ?? true
-        try library.saveCopies(clips, source: "Local", sendToPeers: send)
+        let send = macPauseUntil == nil && (clipboardSettings.object(forKey: "clipboard.sendAutomatically") as? Bool ?? true)
+        try library.saveCopies(clips, source: "Local", sendToPeers: send, privateToDevice: !send)
         if send { syncRequested = true }
         #else
         try library.saveCopies(clips, source: "Local")
@@ -177,12 +196,29 @@ import VisionKit
         if copied { macCopyConfirmation.send(target) }
     }
 
+    func setMacPaused(_ paused: Bool, in clipboard: NSPasteboard = .general, at now: Date = .now) {
+        let until = paused ? now.addingTimeInterval(15 * 60) : nil
+        changeCount = clipboard.changeCount
+        clipboardSettings.set(until, forKey: "clipboard.pauseUntil")
+        macPauseUntil = until
+    }
+
+    func newClipboardVersion(in clipboard: NSPasteboard, at now: Date = .now) -> Int? {
+        let version = clipboard.changeCount
+        if let until = macPauseUntil {
+            if until <= now { setMacPaused(false, in: clipboard, at: now) }
+            else { changeCount = version }
+            return nil
+        }
+        guard changeCount != version else { return nil }
+        changeCount = version
+        return version
+    }
+
     private func pollClipboard() {
         let clipboard = NSPasteboard.general
-        let version = clipboard.changeCount
-        guard changeCount != version else { return }
-        changeCount = version
-        let settings = UserDefaults.standard
+        guard let version = newClipboardVersion(in: clipboard) else { return }
+        let settings = clipboardSettings
         guard (settings.object(forKey: "clipboard.captureAutomatically") as? Bool ?? true),
               version != lastWrittenClipboard, !IsSecureEventInputEnabled() else { return }
         let source = NSWorkspace.shared.frontmostApplication
@@ -198,59 +234,95 @@ import VisionKit
     }
 
     func recordClipboardCopies(in clipboard: NSPasteboard, source: String, sendToPeers: Bool = false) throws {
+        guard macPauseUntil == nil else { return }
         guard let library else { throw RelayFailure.storage }
         let version = clipboard.changeCount
         let clips = try clipboardClips(in: clipboard)
         guard clipboard.changeCount == version else { return }
-        var saved = false
-        var failure: Error?
-        for clip in clips {
-            do {
-                try library.saveCopies([clip], source: source, sendToPeers: sendToPeers)
-                saved = true
-            } catch { failure = error }
+        let saved = clips.save { clip in
+            try library.saveCopies([clip], source: source, sendToPeers: sendToPeers, privateToDevice: !sendToPeers)
         }
-        if saved {
+        if !saved.clips.isEmpty {
             reload()
             if sendToPeers { syncRequested = true }
         }
-        if let failure { throw failure }
+        if !saved.failures.isEmpty {
+            macClipboardReport = saved.report("Saved %lld items")
+        }
     }
 
     private func syncIfDue() {
         let retry = UserDefaults.standard.object(forKey: "clipboard.flushOnReconnect") as? Bool ?? true
-        guard !busy, !peers.isEmpty, syncRequested || (retry && nextAutomaticSync <= .now) else { return }
+        guard macPauseUntil == nil, !busy, !peers.isEmpty, syncRequested || (retry && nextAutomaticSync <= .now) else { return }
         syncRequested = false
         nextAutomaticSync = .now.addingTimeInterval(12)
         Task { await syncConfigured(quietly: true) }
     }
     #endif
-    func sendStoredClip(_ id: String, feedback: ((String) -> Void)? = nil) async {
-        do { await syncConfigured(try storedClip(id), feedback: feedback) }
+    func deliveryStates(for id: String) -> [String: DeliveryState] {
+        (try? library?.deliveryStates(id)) ?? [:]
+    }
+
+    func cancelDelivery(_ id: String, to peer: Peer) {
+        #if os(macOS)
+        let target = "history.delivery.\(id).\(peer.id)"
+        var cancelled = false
+        if macOperation(at: target, { cancelled = try library?.cancelPendingDelivery(id, to: peer) ?? false }),
+           !cancelled {
+            showMacFeedback(ClipRelayPreferences.localized("此发送已开始或已完成"), at: target)
+        }
+        #else
+        operation { _ = try library?.cancelPendingDelivery(id, to: peer) }
+        #endif
+    }
+
+    func sendStoredClip(_ id: String, to peer: Peer?, feedback: ((String) -> Void)? = nil) async {
+        do { await syncConfigured(try storedClip(id), to: peer, feedback: feedback) }
         catch { (feedback ?? { self.notice = $0 })(error.localizedDescription) }
     }
 
-    func syncConfigured(_ clip: Clip? = nil, quietly: Bool = false, feedback: ((String) -> Void)? = nil) async {
+    func syncConfigured(_ clip: Clip? = nil, to peer: Peer? = nil, quietly: Bool = false, feedback: ((String) -> Void)? = nil) async {
+        #if os(macOS)
+        if macPauseUntil != nil {
+            await sync(nil, clip: clip, to: peer, quietly: quietly, feedback: feedback)
+            return
+        }
+        #endif
         let settings = ClipRelayPreferences.defaults
         let address = settings.string(forKey: "relay.url") ?? "https://cliprelay-test.macseek.cc"
         let cloud: Cloud?
         do {
             cloud = try settings.bool(forKey: "relay.enabled") ? Cloud(address, RelayCredential.read(address: address)) : nil
         } catch {
-            await sync(nil, clip: clip, quietly: quietly, feedback: feedback)
+            await sync(nil, clip: clip, to: peer, quietly: quietly, feedback: feedback)
             if !quietly { (feedback ?? { self.notice = $0 })(error.localizedDescription) }
             return
         }
-        await sync(cloud, clip: clip, quietly: quietly, feedback: feedback)
+        await sync(cloud, clip: clip, to: peer, quietly: quietly, feedback: feedback)
     }
-    func sync(_ cloud:Cloud?, clip:Clip?=nil, quietly:Bool=false, feedback: ((String) -> Void)? = nil) async {
+    func sync(_ cloud:Cloud?, clip:Clip?=nil, to destination: Peer? = nil, quietly:Bool=false, feedback: ((String) -> Void)? = nil) async {
         let report = feedback ?? { self.notice = $0 }
+        #if os(macOS)
+        guard macPauseUntil == nil else {
+            if !quietly { report(ClipRelayPreferences.localized("已暂停记录与同步")) }
+            return
+        }
+        #endif
         guard let transfer else {
             if !quietly { report(RelayFailure.storage.localizedDescription) }
             return
         }
         if let clip {
-            do {guard !peers.isEmpty else{throw RelayFailure.unauthorized};try transfer.queue(clip)}
+            do {
+                let recipients = try transfer.library.peers().filter { destination == nil || destination?.id == $0.id }
+                guard !recipients.isEmpty else { throw RelayFailure.unauthorized }
+                #if os(iOS)
+                if destination == nil { try transfer.queue(clip) }
+                else { try transfer.queue(clip, to: recipients) }
+                #else
+                try transfer.queue(clip, to: recipients)
+                #endif
+            }
             catch {report(error.localizedDescription);return}
         }
         guard !busy else {
@@ -272,8 +344,11 @@ import VisionKit
             peers = try transfer.library.peers()
             var routes:[String]=[], failures:[String]=[], unavailable:[String]=[]
             var received = 0
-            for peer in peers {
+            for peer in peers where destination == nil || destination?.id == peer.id {
                 try Task.checkCancellation()
+                #if os(macOS)
+                guard macPauseUntil == nil else { return }
+                #endif
                 if let clip {
                     do { routes += try await transfer.flush(to: peer, cloud: cloud, only: clip.id.uuidString) }
                     catch { failures.append(peer.name) }
@@ -298,7 +373,18 @@ import VisionKit
                     catch { if cloud == nil { unavailable.append(peer.name) } }
                 }
             }
-            if clip == nil, let cloud { received += try await transfer.pull(cloud) }
+            if clip == nil {
+                var pullError: Error?
+                if let cloud {
+                    do { received += try await transfer.pull(cloud) }
+                    catch { pullError = error }
+                }
+                for peer in peers where destination == nil || destination?.id == peer.id {
+                    try Task.checkCancellation()
+                    try? await transfer.flushTerminalReceipts(to: peer, cloud: cloud)
+                }
+                if let pullError { throw pullError }
+            }
             if !quietly || !routes.isEmpty || received > 0 || !failures.isEmpty {
                 if !failures.isEmpty {
                     report(ClipRelayPreferences.localized("Pending") + " · " + failures.joined(separator: ", "))
@@ -446,7 +532,7 @@ struct Home:View {
                             .accessibilityIdentifier("history.copy.\(row.id)")
                             .help("Copy")
                         Button {
-                            Task { await model.sendStoredClip(row.id) }
+                            Task { await model.sendStoredClip(row.id, to: nil) }
                         } label: { historyIcon("paperplane") }
                             .accessibilityLabel(Text("Send to devices"))
                             .accessibilityIdentifier("history.send.\(row.id)")

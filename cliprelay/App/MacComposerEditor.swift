@@ -79,6 +79,10 @@ struct MacComposerEditor: NSViewRepresentable {
 
         override func paste(_ sender: Any?) {
             let pasteboard = NSPasteboard.general
+            if isEditable, shouldStage(pasteboard), let stagePaste {
+                stagePaste(pasteboard)
+                return
+            }
             guard isEditable, let type = pasteboard.types?.first(where: Self.isClipType) else {
                 super.paste(sender)
                 return
@@ -87,9 +91,15 @@ struct MacComposerEditor: NSViewRepresentable {
         }
 
         override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
-            guard Self.isClipType(type), let stagePaste else { return super.readSelection(from: pasteboard, type: type) }
+            guard Self.isClipType(type) || shouldStage(pasteboard), let stagePaste else {
+                return super.readSelection(from: pasteboard, type: type)
+            }
             stagePaste(pasteboard)
             return true
+        }
+
+        private func shouldStage(_ pasteboard: NSPasteboard) -> Bool {
+            (pasteboard.pasteboardItems?.count ?? 0) > 1 || isPrivateClipboard(pasteboard)
         }
 
         private static func isClipType(_ type: NSPasteboard.PasteboardType) -> Bool {

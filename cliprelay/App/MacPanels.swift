@@ -193,12 +193,7 @@ struct MacDevicesPanel: View {
             } else {
                 PeerAddress(model: model, peer: peer).id(peer.id)
                 HStack {
-                    Button {
-                        Task { await sendTest(to: peer) }
-                    } label: { Label("发送测试条目", systemImage: "paperplane") }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.busy)
-                    .macFeedbackTarget("device.test.\(peer.id)")
+                    MacPairingTest(model: model, peer: peer).id(peer.id)
                     Button {
                         model.macCopy(at: "device.fingerprint.\(peer.id)") {
                             try systemCopy(.text(peer.fingerprint))
@@ -240,25 +235,55 @@ struct MacDevicesPanel: View {
         }
     }
 
-    private func sendTest(to peer: Peer) async {
-        let target = "device.test.\(peer.id)"
+}
+
+struct MacPairingTest: View {
+    @ObservedObject var model: Model
+    let peer: Peer
+    @State private var testID: String?
+    private var target: String { "device.test.\(peer.id)" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                Task { await sendTest() }
+            } label: {
+                Label("发送测试文字", systemImage: "paperplane")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.busy || model.macPauseUntil != nil)
+            .macFeedbackTarget(target)
+            if let testID, let state = model.deliveryStates(for: testID)[peer.id] {
+                Text(status(state))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func status(_ state: DeliveryState) -> LocalizedStringKey {
+        switch state {
+        case .pending: "等待设备接收"
+        case .received: "对方设备已接收"
+        case .relayed: "已交给中继，等待设备接收"
+        }
+    }
+
+    private func sendTest() async {
+        guard !model.busy, model.macPauseUntil == nil else { return }
         do {
-            guard let transfer = model.transfer else { throw RelayFailure.storage }
-            let clip = Clip.text("随贴测试条目 · \(transfer.me.peer.name)")
-            let settings = ClipRelayPreferences.defaults
-            let address = settings.string(forKey: "relay.url") ?? "https://cliprelay-test.macseek.cc"
-            let cloud = settings.bool(forKey: "relay.enabled") ? try Cloud(address, RelayCredential.read(address: address)) : nil
-            // Target only the selected device.
-            let wire = try Envelope.seal(Codec.pack(clip), from: transfer.me, to: peer)
-            try transfer.library.save(clip, source: "Local")
-            try transfer.library.queue(clip.id.uuidString, peer: peer, wire: wire)
-            let routes = try await transfer.flush(to: peer, cloud: cloud, only: clip.id.uuidString)
-            let message = routes.isEmpty ? ClipRelayPreferences.localized("测试条目等待同步") : String(localized: "已向 \(peer.name) 发送测试条目")
-            model.showMacFeedback(message, at: target)
+            guard let library = model.library else { throw RelayFailure.storage }
+            let clip = Clip.text("随贴同步测试")
+            try library.save(clip, source: "Local", privateToDevice: true)
+            let id = clip.id.uuidString
+            testID = id
+            await model.sendStoredClip(id, to: peer, feedback: { message in
+                if model.deliveryStates(for: id)[peer.id] == nil {
+                    model.showMacFeedback(message, at: target)
+                }
+            })
         } catch {
             model.showMacFeedback(error.localizedDescription, at: target)
         }
-        model.reload()
     }
 }
 
@@ -295,8 +320,29 @@ enum MacHistoryPrivacy {
     }
 }
 
+enum MacHistoryAuthentication {
+    static let preference = "mac.requireBiometrics"
+
+    @MainActor static func verify(
+        _ reason: String,
+        required: Bool = UserDefaults.standard.bool(forKey: preference),
+        evaluate: (String) async throws -> Bool = { reason in
+            try await LAContext().evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
+        }
+    ) async throws -> Bool {
+        guard !Task.isCancelled else { return false }
+        guard required else { return true }
+        do {
+            let verified = try await evaluate(ClipRelayPreferences.localized(reason))
+            return verified && !Task.isCancelled
+        } catch let error as LAError where [.userCancel, .systemCancel, .appCancel, .userFallback].contains(error.code) {
+            return false
+        }
+    }
+}
+
 struct MacHistoryGate<Content: View>: View {
-    @AppStorage("mac.requireBiometrics") private var required = false
+    @AppStorage(MacHistoryAuthentication.preference) private var required = false
     @State private var unlocked = false
     @State private var authenticating = false
     @State private var error = ""
@@ -324,8 +370,7 @@ struct MacHistoryGate<Content: View>: View {
         authenticating = true
         defer { authenticating = false }
         do {
-            unlocked = try await LAContext().evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics, localizedReason: String(localized: "解锁剪贴板历史"))
+            unlocked = try await MacHistoryAuthentication.verify("解锁剪贴板历史", required: required)
             error = ""
         } catch {
             self.error = error.localizedDescription
@@ -372,7 +417,7 @@ struct MacSettingsPanel: View {
     @AppStorage("relay.url") private var address = "https://cliprelay-test.macseek.cc"
     @AppStorage("mac.maskSensitive") private var maskSensitive = true
     @AppStorage("mac.maskCodes") private var maskCodes = false
-    @AppStorage("mac.requireBiometrics") private var biometrics = false
+    @AppStorage(MacHistoryAuthentication.preference) private var biometrics = false
     @AppStorage("mac.historyRetentionHours") private var retentionHours = 0
     @State private var credential = ""
     @State private var testing = false
@@ -453,7 +498,7 @@ struct MacSettingsPanel: View {
 
     private var sync: some View {
         VStack(alignment: .leading, spacing: 0) {
-            toggle("自动同步", "将新复制的内容同步到已配对设备", $send)
+            toggle("自动发送新复制的内容", "发送给所有已配对设备。关闭后，仍可在历史中选择设备手动发送。", $send)
             Divider()
             toggle("局域网发现", "通过 Bonjour 发现同一 Wi-Fi 下的设备", $discover)
             Divider()
@@ -483,11 +528,11 @@ struct MacSettingsPanel: View {
             Divider()
             toggle("断线自动同步", "连接恢复后重试待同步内容", $flush)
             Divider()
-            row("手动同步", "立即检查各已配对设备") {
+            row("手动同步", "重试待发内容并接收各已配对设备发来的内容") {
                 Button("立即同步") {
                     Task { await model.syncConfigured(feedback: { model.showMacFeedback($0, at: "settings.syncNow") }) }
                 }
-                .disabled(model.busy || model.peers.isEmpty)
+                .disabled(model.busy || model.peers.isEmpty || model.macPauseUntil != nil)
                 .macFeedbackTarget("settings.syncNow")
             }
         }
@@ -504,9 +549,9 @@ struct MacSettingsPanel: View {
     private var privacy: some View {
         VStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 0) {
-                toggle("敏感内容自动打码", "列表遮蔽可识别的密码、验证码与访问令牌", $maskSensitive)
+                toggle("在历史列表中打码", "遮蔽可识别的密码、验证码与访问令牌预览。打码仅影响本机显示。", $maskSensitive)
                 Divider()
-                toggle("验证码仅显示星号", "详情也遮蔽可识别的验证码", $maskCodes)
+                toggle("验证码列表和详情打码", "在历史列表及详情中遮蔽可识别的验证码。复制时仍使用原文。", $maskCodes)
                 Divider()
                 row("生物识别解锁", "使用 Touch ID 解锁剪贴板历史") {
                     Toggle("生物识别解锁", isOn: Binding(get: { biometrics }, set: setBiometrics))
@@ -686,29 +731,28 @@ struct MacSettingsPanel: View {
 
     private func exportHistory() {
         guard let library = model.library else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "cliprelay-history.txt"
-        panel.allowedContentTypes = [.plainText]
         exporting = true
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { exporting = false; return }
-            let sensitive = maskSensitive
-            let codes = maskCodes
-            Task { @MainActor in
-                defer { exporting = false }
-                do {
-                    try await Task.detached {
-                        let data = try library.archiveIDs().map { record in
-                            let clip = try library.clip(record.id)
-                            let value = clip.text ?? clip.name
-                            let protected = MacHistoryPrivacy.isMasked(value, sensitive: sensitive, codes: codes, forDetail: false)
-                            return "[\(record.captured.ISO8601Format())] \(record.source) · \(protected ? "******" : value)"
-                        }.joined(separator: "\n")
-                        try Data(data.utf8).write(to: url, options: .atomic)
-                    }.value
-                    model.showMacFeedback(ClipRelayPreferences.localized("已导出历史"), at: "settings.export")
-                } catch { model.showMacFeedback(error.localizedDescription, at: "settings.export") }
-            }
+        Task { @MainActor in
+            defer { exporting = false }
+            do {
+                guard try await MacHistoryAuthentication.verify("Verify to export clipboard history") else { return }
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue = "cliprelay-history.txt"
+                panel.allowedContentTypes = [.plainText]
+                guard await panel.begin() == .OK, let url = panel.url else { return }
+                let sensitive = maskSensitive
+                let codes = maskCodes
+                try await Task.detached {
+                    let data = try library.archiveIDs().map { record in
+                        let clip = try library.clip(record.id)
+                        let value = clip.text ?? clip.name
+                        let protected = MacHistoryPrivacy.isMasked(value, sensitive: sensitive, codes: codes, forDetail: false)
+                        return "[\(record.captured.ISO8601Format())] \(record.source) · \(protected ? "******" : value)"
+                    }.joined(separator: "\n")
+                    try Data(data.utf8).write(to: url, options: .atomic)
+                }.value
+                model.showMacFeedback(ClipRelayPreferences.localized("已导出历史"), at: "settings.export")
+            } catch { model.showMacFeedback(error.localizedDescription, at: "settings.export") }
         }
     }
 }

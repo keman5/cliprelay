@@ -94,6 +94,11 @@ struct MacHistorySession {
     }
 }
 
+struct MacHistorySearch: Equatable {
+    var query = ""
+    var revision = 0
+}
+
 struct MacHistory: View {
     @ObservedObject var model: Model
     @Environment(\.colorScheme) private var scheme
@@ -101,8 +106,8 @@ struct MacHistory: View {
     @AppStorage("mac.maskSensitive") private var maskSensitive = true
     @AppStorage("mac.maskCodes") private var maskCodes = false
     @State private var history = MacHistorySession()
-    @State private var matches: [Summary] = []
-    @State private var query = ""
+    @State private var matches: (request: MacHistorySearch, rows: [Summary])?
+    @State private var search = MacHistorySearch()
     @State private var kinds: Set<MacClipKind> = []
     @State private var pinnedOnly = false
     @State private var sources: Set<Source> = []
@@ -126,8 +131,10 @@ struct MacHistory: View {
     private enum Filter { case kind, source }
     private var palette: MacPalette { MacPalette(scheme) }
     private var all: [Summary] { history.rows }
+    private var query: String { search.query }
     private var rows: [Summary] {
-        (query.isEmpty ? all : matches).filter {
+        let found = matches?.request == search ? matches?.rows ?? [] : []
+        return (query.isEmpty ? all : found).filter {
             matchesKind($0) && matchesSource($0)
         }
     }
@@ -169,7 +176,7 @@ struct MacHistory: View {
         }
         .onReceive(model.$rows) { _ in reload() }
         .onDisappear { history = MacHistorySession() }
-        .onChange(of: query) { _, _ in search() }
+        .task(id: search) { [search] in await findMatches(for: search) }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             if all.contains(where: { $0.expires.map { $0 <= .now } ?? false }) { model.reload() }
         }
@@ -184,13 +191,13 @@ struct MacHistory: View {
         HStack(spacing: 7) {
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass").foregroundStyle(palette.muted)
-                TextField("Search history…", text: $query)
+                TextField("Search history…", text: $search.query)
                     .textFieldStyle(.plain)
                     .focused($focused, equals: .search)
                     .accessibilityIdentifier("mac.history.search")
                     .macFeedbackTarget("history.search")
                 if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    Button { search.query = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(palette.muted).accessibilityLabel("Clear search")
                 }
             }
@@ -307,7 +314,7 @@ struct MacHistory: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    if rows.isEmpty {
+                    if rows.isEmpty && (query.isEmpty || matches?.request == search) {
                         Text(query.isEmpty && kinds.isEmpty && !pinnedOnly && sources.isEmpty ? "No clipboard history" : "No matching items")
                             .font(.system(size: 13)).foregroundStyle(palette.secondary)
                             .frame(maxWidth: .infinity).padding(.vertical, 36)
@@ -431,13 +438,25 @@ struct MacHistory: View {
             history.update(latest)
             checked.formIntersection(Set(latest.map(\.id)))
             sources.formIntersection(Set(latest.map(source(for:))))
-            search()
+            search.revision += 1
         } catch { model.showMacFeedback(error.localizedDescription, at: "history.search") }
     }
 
-    private func search() {
-        do { matches = query.isEmpty ? [] : history.ordered(try model.library?.macHistory(search: query) ?? []) }
-        catch { model.showMacFeedback(error.localizedDescription, at: "history.search") }
+    private func findMatches(for request: MacHistorySearch) async {
+        guard !Task.isCancelled, search == request else { return }
+        guard !request.query.isEmpty, let root = model.library?.root else {
+            matches = (request, [])
+            return
+        }
+        do {
+            let rows = try await Library.searchMacHistory(in: root, for: request.query)
+            guard !Task.isCancelled, search == request else { return }
+            matches = (request, history.ordered(rows))
+        } catch {
+            guard !Task.isCancelled, search == request else { return }
+            matches = (request, [])
+            model.showMacFeedback(error.localizedDescription, at: "history.search")
+        }
     }
 }
 
@@ -459,7 +478,7 @@ struct MacClipStatus: View {
     var body: some View {
         HStack(spacing: 4) {
             if row.pinned { status("pin", color: .orange, label: "Pinned") }
-            if row.burn { status("flame", color: .red, label: "Burn after copy") }
+            if row.burn { status("flame", color: .red, label: "Delete from this Mac after copying") }
         }
     }
 
@@ -515,6 +534,36 @@ struct MacClipComposer: View {
     private var hasContent: Bool { !draft.isEmpty || !pastedClips.isEmpty }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if !model.macClipboardReport.isEmpty {
+                HStack(alignment: .top) {
+                    ViewThatFits(in: .vertical) {
+                        clipboardReportText
+                        ScrollView { clipboardReportText }
+                    }
+                    .frame(maxHeight: 96)
+                    Button { model.macClipboardReport = "" } label: {
+                        Image(systemName: "xmark").padding(4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss clipboard report")
+                }
+                .padding(.horizontal, 12).padding(.top, 8)
+            }
+            composer
+        }
+        .background(palette.raised)
+    }
+
+    private var clipboardReportText: some View {
+        Text(verbatim: model.macClipboardReport)
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+    }
+
+    private var composer: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 5) {
                 if !pastedClips.isEmpty {
@@ -569,7 +618,8 @@ struct MacClipComposer: View {
             .help("Add to clipboard history")
             .contextMenu {
                 Button("Add from system clipboard") {
-                    model.macOperation(at: "history.add") { try model.save(clipboardClips(in: .general)) }
+                    do { save(try clipboardClips(in: .general)) }
+                    catch { report(error) }
                 }
                 Button("Import file") { importing = true }
             }
@@ -578,29 +628,74 @@ struct MacClipComposer: View {
         .padding(.horizontal, compact ? 10 : 12).padding(.vertical, 10)
         .background(palette.raised)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            model.macOperation(at: "history.add") { try model.save(result.get().map { try fileClip($0) }) }
+            do {
+                var batch = MacClipBatch()
+                for url in try result.get() {
+                    batch.read(url.lastPathComponent) { try fileClip(url) }
+                }
+                save(batch)
+            } catch { report(error) }
         }
     }
 
     private func stagePaste(_ pasteboard: NSPasteboard) {
         do {
-            let clips = try clipboardClips(in: pasteboard)
-            for clip in clips { try clip.validate() }
-            pastedClips.append(contentsOf: clips)
-            model.showMacFeedback("", at: "history.add")
-        } catch {
-            model.showMacFeedback(error.localizedDescription, at: "history.add")
-        }
+            let batch = try clipboardClips(in: pasteboard)
+            pastedClips.append(contentsOf: batch.clips)
+            if !batch.failures.isEmpty { model.macClipboardReport = batch.report("Added %lld items to the draft") }
+        } catch { report(error) }
     }
 
     private func add(_ text: String) {
         guard !text.isEmpty || !pastedClips.isEmpty else { return }
-        var clips = pastedClips
-        if !text.isEmpty { clips.append(.text(text)) }
-        model.macOperation(at: "history.add") {
-            try model.save(clips)
-            pastedClips = []
-            draft = ""
+        let textClip: Clip? = text.isEmpty ? nil : .text(text)
+        let saved = save(MacClipBatch(clips: pastedClips + [textClip].compactMap { $0 }))
+        let savedIDs = Set(saved.clips.map(\.id))
+        pastedClips.removeAll { savedIDs.contains($0.id) }
+        if let textClip, savedIDs.contains(textClip.id) { draft = "" }
+    }
+
+    @discardableResult private func save(_ batch: MacClipBatch) -> MacClipBatch {
+        let saved = batch.save { try model.save([$0]) }
+        if !saved.clips.isEmpty { model.reload() }
+        if !saved.failures.isEmpty { model.macClipboardReport = saved.report("Saved %lld items") }
+        return saved
+    }
+
+    private func report(_ error: Error) {
+        let message = (error as? RelayFailure) == .unauthorized
+            ? ClipRelayPreferences.localized("Private clipboard content was skipped")
+            : error.localizedDescription
+        model.showMacFeedback(message, at: "history.add")
+    }
+}
+
+struct MacSendClip: View {
+    @ObservedObject var model: Model
+    let id: String
+    let feedbackTarget: String
+
+    var body: some View {
+        Group {
+            if model.macPauseUntil != nil {
+                Button("Sending paused") {}.disabled(true)
+            } else if let peer = model.peers.first, model.peers.count == 1 {
+                Button("Send to \(peer.name)") { send(to: peer) }
+            } else if !model.peers.isEmpty {
+                Menu("Send to…") {
+                    ForEach(model.peers) { peer in
+                        Button(peer.name) { send(to: peer) }
+                    }
+                    Divider()
+                    Button("Send to all devices (\(model.peers.count))") { send(to: nil) }
+                }
+            }
+        }
+    }
+
+    private func send(to peer: Peer?) {
+        Task {
+            await model.sendStoredClip(id, to: peer) { model.showMacFeedback($0, at: feedbackTarget) }
         }
     }
 }
@@ -659,6 +754,7 @@ struct MacClipDetail: View {
                                      ?? ByteCountFormatter.string(fromByteCount: Int64(clip.bytes.count), countStyle: .file))
                         }
                     }
+                    deliveryResults
                 }
             }
             // A legacy scroller takes space from the text and changes its wrapping.
@@ -667,6 +763,10 @@ struct MacClipDetail: View {
             .accessibilityIdentifier("mac.history.detail.preview")
             Divider()
             VStack(alignment: .leading, spacing: 12) {
+                if !model.peers.isEmpty {
+                    MacSendClip(model: model, id: row.id, feedbackTarget: "detail.send")
+                        .macFeedbackTarget("detail.send")
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Expiration").font(.system(size: 12, weight: .semibold)).foregroundStyle(palette.secondary)
                     HStack(spacing: 4) {
@@ -680,13 +780,6 @@ struct MacClipDetail: View {
                         detailButton(row.pinned ? "Unpin" : "Pin", symbol: row.pinned ? "pin.slash" : "pin") {
                             model.macOperation(at: "detail.pin") { try model.library?.pin(row.id) }
                         }.macFeedbackTarget("detail.pin")
-                        detailButton(row.burn ? "Turn off burn after copy" : "Burn after copy", symbol: "flame") {
-                            model.macOperation(at: "detail.burn") { try model.library?.setBurn(row.id, !row.burn) }
-                        }
-                        .macFeedbackTarget("detail.burn")
-                        .help("Remove from this Mac when copied from history")
-                    }
-                    GridRow {
                         detailButton("Export file", symbol: "square.and.arrow.down", action: export)
                             .macFeedbackTarget("detail.export")
                         detailButton("Delete", symbol: "trash", destructive: true) { confirming = true }
@@ -694,6 +787,11 @@ struct MacClipDetail: View {
                             .macFeedbackTarget("detail.delete")
                     }
                 }
+                Toggle("Delete from this Mac after copying", isOn: Binding(get: { row.burn }, set: { value in
+                    model.macOperation(at: "detail.burn") { try model.library?.setBurn(row.id, value) }
+                }))
+                .font(.system(size: 12))
+                .macFeedbackTarget("detail.burn")
                 if showsCopy {
                     detailButton("Copy", symbol: "doc.on.doc") {
                         if let copy { copy() } else { model.macCopy(row, at: "detail.copy") }
@@ -717,6 +815,34 @@ struct MacClipDetail: View {
         .alert("Confirm deletion", isPresented: $confirming) {
             Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("Delete", role: .destructive) { model.macOperation(at: "detail.delete") { try model.library?.delete(row.id) } }
+        }
+    }
+
+    @ViewBuilder private var deliveryResults: some View {
+        if !model.peers.isEmpty {
+            let delivery = model.deliveryStates(for: row.id)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Delivery status").fontWeight(.semibold)
+                ForEach(model.peers) { peer in
+                    let state = delivery[peer.id]
+                    HStack {
+                        Text(peer.name).lineLimit(1)
+                        Spacer()
+                        switch state {
+                        case .pending:
+                            Text("Pending").foregroundStyle(palette.secondary)
+                            Button("Cancel delivery") { model.cancelDelivery(row.id, to: peer) }
+                        case .received:
+                            Text("Received").foregroundStyle(palette.secondary)
+                        case .relayed:
+                            Text("Handed to relay · Delivery unconfirmed").foregroundStyle(palette.secondary)
+                        case nil:
+                            Text("Not sent").foregroundStyle(palette.secondary)
+                        }
+                    }
+                }
+            }
+            .font(.system(size: 12))
         }
     }
 
@@ -783,17 +909,18 @@ struct MacClipDetail: View {
     }
 
     private func export() {
-        do {
-            let value = try model.storedClip(row.id)
-            let panel = NSSavePanel()
-            let name = URL(fileURLWithPath: value.name).lastPathComponent
-            panel.nameFieldStringValue = value.isFile == true && !masked ? name : "ClipRelay"
-            if let type = UTType(value.type) { panel.allowedContentTypes = [type] }
-            panel.begin { result in
-                guard result == .OK, let destination = panel.url else { return }
-                model.macOperation(at: "detail.export") { try value.bytes.write(to: destination, options: .atomic) }
-            }
-        } catch { model.showMacFeedback(error.localizedDescription, at: "detail.export") }
+        Task { @MainActor in
+            do {
+                guard try await MacHistoryAuthentication.verify("Verify to export a clipboard item") else { return }
+                let value = try model.storedClip(row.id)
+                let panel = NSSavePanel()
+                let name = URL(fileURLWithPath: value.name).lastPathComponent
+                panel.nameFieldStringValue = value.isFile == true && !masked ? name : "ClipRelay"
+                if let type = UTType(value.type) { panel.allowedContentTypes = [type] }
+                guard await panel.begin() == .OK, let destination = panel.url else { return }
+                try value.bytes.write(to: destination, options: .atomic)
+            } catch { model.showMacFeedback(error.localizedDescription, at: "detail.export") }
+        }
     }
 }
 
