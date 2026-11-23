@@ -68,6 +68,7 @@ struct PairingSettings: View {
     @State private var pairingStatus: LocalizedStringKey?
     @State private var fetching = false
     @State private var shortCode = ""
+    @State private var manualPairingExpanded = false
     @FocusState private var shortCodeFocused: Bool
     @State private var localAddress = ""
     @State private var code = ""
@@ -204,12 +205,18 @@ struct PairingSettings: View {
                     copyButton("Copy pairing code", value: card.shortCode, target: "pairing.copy.short")
                     if showInvitation {
                         QR(content: value).accessibilityLabel(Text("Pairing QR code"))
-                    }
-                    DisclosureGroup("Pairing details") {
-                        if !showInvitation { QR(content: value).accessibilityLabel(Text("Pairing QR code")) }
                         ForEach(card.addresses ?? [], id: \.self) { address in
                             LabeledContent("Local address", value: address)
                                 .textSelection(.enabled)
+                        }
+                    }
+                    DisclosureGroup("Pairing details") {
+                        if !showInvitation {
+                            QR(content: value).accessibilityLabel(Text("Pairing QR code"))
+                            ForEach(card.addresses ?? [], id: \.self) { address in
+                                LabeledContent("Local address", value: address)
+                                    .textSelection(.enabled)
+                            }
                         }
                         copyButton("Copy full invitation code", value: value, target: "pairing.copy.invitation")
                     }
@@ -305,7 +312,11 @@ struct PairingSettings: View {
                     }
                 }
             }
-            DisclosureGroup("Manual pairing") {
+            if let pairingStatus {
+                if waiting != nil || fetching { ProgressView { Text(pairingStatus) } }
+                else { Text(pairingStatus) }
+            }
+            DisclosureGroup("Manual pairing", isExpanded: $manualPairingExpanded) {
                 if waiting == nil {
                     TextField("Local address (optional)", text: $localAddress)
                         .autocorrectionDisabled()
@@ -316,10 +327,6 @@ struct PairingSettings: View {
                     codeRow(waiting.code, caption: "Enter this request on the inviting device")
                 }
                 manualPairingControls
-            }
-            if let pairingStatus {
-                if waiting != nil || fetching { ProgressView { Text(pairingStatus) } }
-                else { Text(pairingStatus) }
             }
             if waiting != nil {
                 Button("Cancel pairing", role: .cancel) {
@@ -437,6 +444,11 @@ struct PairingSettings: View {
             pairingStatus = "Enter a local IP address and port, such as 192.168.1.2:52000."
             return
         }
+        if address.isEmpty && !ClipRelayPreferences.discoveryEnabled {
+            manualPairingExpanded = true
+            pairingStatus = "LAN discovery is off. Enter the local address shown on the other device, or scan its pairing QR code."
+            return
+        }
         fetching = true
         pairingStatus = "Connecting to the other device…"
         Task {
@@ -446,8 +458,15 @@ struct PairingSettings: View {
                 let explicitAddress = address.isEmpty ? nil : address
                 let invitation = try await transfer.findPairing(pin, address: explicitAddress)
                 try reviewInvitation(invitation, at: transfer.me, address: explicitAddress)
+            } catch Exchange.PairingLookupError.localNetworkDenied {
+                pairingStatus = "Allow Local Network in Settings to pair over Wi-Fi."
+            } catch Exchange.PairingLookupError.codeMismatch {
+                pairingStatus = "That code does not match an active invitation. Refresh the code on the other device and try again."
+            } catch Exchange.PairingLookupError.ambiguous {
+                pairingStatus = "More than one device is using this code. Refresh the code on the device you want to pair."
             } catch {
-                pairingStatus = "No matching pairing code. Check the code and Wi-Fi, or scan the pairing QR code."
+                manualPairingExpanded = true
+                pairingStatus = "Could not reach a pairing invitation. Keep it open on the other device. Enter its local address below, or scan its pairing QR code."
             }
         }
     }

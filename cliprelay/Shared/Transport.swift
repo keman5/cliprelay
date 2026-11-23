@@ -6,6 +6,9 @@ import dnssd
 
 final class Exchange {
     enum Mode { case legacy, hub, client }
+    enum PairingLookupError: Error {
+        case localNetworkDenied, noInvitation, codeMismatch, ambiguous
+    }
 
     private struct HistoryRequest: Codable {
         let nonce: UUID
@@ -24,7 +27,7 @@ final class Exchange {
     private var browser: NWBrowser?
     private let io = DispatchQueue(label:"cc.macseek.cliprelay.transport")
     private var connections = 0
-    private var endpoints: [String:NWEndpoint] = [:]
+    private var endpoints: [String: Set<NWEndpoint>] = [:]
     private var nearby: [String:String] = [:]
     private var phoneInvitations: Set<String> = []
     private var localNetworkDenied = false
@@ -122,6 +125,7 @@ final class Exchange {
                 endpoints.removeAll()
                 nearby.removeAll()
                 phoneInvitations.removeAll()
+                localNetworkDenied = false
             }
         }
     }
@@ -130,23 +134,25 @@ final class Exchange {
         io.sync {
             guard browser == nil else { return }
             let browser=NWBrowser(for:.bonjourWithTXTRecord(type:"_cliprelay._tcp",domain:nil),using:.tcp)
-            browser.stateUpdateHandler = { [weak self] state in
+            browser.stateUpdateHandler = { [weak self, weak browser] state in
+                guard let self, let browser, self.browser === browser else { return }
                 switch state {
                 case .waiting(.dns(let code)), .failed(.dns(let code)):
-                    self?.localNetworkDenied = code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
+                    self.localNetworkDenied = code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
                 case .ready:
-                    self?.localNetworkDenied = false
+                    self.localNetworkDenied = false
                 default: break
                 }
             }
             browser.browseResultsChangedHandler = { [weak self, weak browser] results,_ in
                 guard let self, let browser, self.browser === browser else { return }
-                var next:[String:NWEndpoint]=[:]
+                var next: [String: Set<NWEndpoint>] = [:]
                 var nearby: [String:String] = [:]
                 var phones: Set<String> = []
                 for result in results {
-                    if case .service(let name,_,_,_) = result.endpoint {
-                        next[name] = result.endpoint
+                    if case .service(let name, let type, let domain, _) = result.endpoint {
+                        next[name, default: []].insert(.service(name: name, type: type, domain: domain, interface: nil))
+                        next[name, default: []].insert(result.endpoint)
                         if name != self.me.peer.service, case .bonjour(let txt) = result.metadata,
                            let label = txt["pair"], !label.isEmpty {
                             nearby[name] = label
@@ -175,7 +181,12 @@ final class Exchange {
         return .hostPort(host: .ipv4(ip), port: nwPort)
     }
     private func endpoint(for peer: Peer) -> NWEndpoint? {
-        io.sync { endpoints[peer.service] } ?? (try? library.lanAddress(peer)).flatMap(Self.localEndpoint)
+        io.sync {
+            endpoints[peer.service]?.first { endpoint in
+                if case .service(_, _, _, nil) = endpoint { return true }
+                return false
+            }
+        } ?? (try? library.lanAddress(peer)).flatMap(Self.localEndpoint)
     }
     var isLocalNetworkDenied: Bool { io.sync { localNetworkDenied } }
     func nearbyInvitations(macOnly: Bool = false) -> [String:String] {
@@ -199,7 +210,9 @@ final class Exchange {
                 if Self.localEndpoint(value) != nil, !addresses.contains(value) { addresses.append(value) }
             }
         }
-        return try PairingCard(me.peer, addresses: addresses)
+        let routed = addresses.filter { !$0.hasPrefix("169.254.") }
+        let linkLocal = addresses.filter { $0.hasPrefix("169.254.") }
+        return try PairingCard(me.peer, addresses: routed + linkLocal)
     }
     func offerPairing(_ card: PairingCard?, replacing challenge: UUID? = nil) {
         io.sync {
@@ -280,35 +293,64 @@ final class Exchange {
             guard let endpoint = Self.localEndpoint(address) else { throw RelayFailure.invalid }
             let code = try await pairingMessage("invite", service: "", at: endpoint)
             let card = try PairingCard.parse(code)
-            guard card.shortCode == pin else { throw RelayFailure.invalid }
+            guard card.shortCode == pin else { throw PairingLookupError.codeMismatch }
             return card
         }
 
-        // A result can be reachable even when Bonjour has not delivered its invitation TXT record.
+        let deadline = ContinuousClock.now + .seconds(5)
+        var sawOtherCode = false
+        repeat {
+            try Task.checkCancellation()
+            if isLocalNetworkDenied { throw PairingLookupError.localNetworkDenied }
+            let cards = await nearbyPairingCards()
+            let matches = cards.filter { $0.shortCode == pin }
+            if matches.count > 1 { throw PairingLookupError.ambiguous }
+            if let match = matches.first { return match }
+            sawOtherCode = sawOtherCode || !cards.isEmpty
+            if ContinuousClock.now >= deadline { break }
+            try await Task.sleep(for: .milliseconds(400))
+        } while ContinuousClock.now < deadline
+        if isLocalNetworkDenied { throw PairingLookupError.localNetworkDenied }
+        throw sawOtherCode ? PairingLookupError.codeMismatch : PairingLookupError.noInvitation
+    }
+
+    private func nearbyPairingCards() async -> [PairingCard] {
+        // Bonjour can deliver the service before the updated invitation TXT record.
         let services = discovered().filter { $0 != me.peer.service }
-        return try await withThrowingTaskGroup(of: PairingCard?.self) { group in
+        return await withTaskGroup(of: PairingCard?.self) { group in
             for service in services {
                 group.addTask { [self] in
-                    guard let code = try? await fetchPairing(service), let card = try? PairingCard.parse(code),
-                          card.shortCode == pin else { return nil }
-                    return card
+                    guard let code = try? await fetchPairing(service) else { return nil }
+                    return try? PairingCard.parse(code)
                 }
             }
-            var match: PairingCard?
-            for try await card in group {
-                guard let card else { continue }
-                guard match == nil else { throw RelayFailure.invalid }
-                match = card
-            }
-            guard let match else { throw RelayFailure.unavailable }
-            return match
+            var cards: [PairingCard] = []
+            for await card in group { if let card { cards.append(card) } }
+            return cards
         }
     }
+
     func pairingMessage(_ code: String, service: String, at address: NWEndpoint? = nil) async throws -> String {
-        guard code.utf8.count < 4096, let endpoint = address ?? io.sync(execute: { endpoints[service] }) else {
+        guard code.utf8.count < 4096 else { throw RelayFailure.invalid }
+        let packet = Data(code.utf8)
+        if let address {
+            return try await sendPairingMessage(packet, to: address)
+        }
+        let routes = io.sync { endpoints[service] ?? [] }
+        return try await withThrowingTaskGroup(of: String?.self) { group in
+            for route in routes {
+                group.addTask { [self] in try? await sendPairingMessage(packet, to: route) }
+            }
+            for try await response in group {
+                if let response { group.cancelAll(); return response }
+            }
             throw RelayFailure.unavailable
         }
-        let response = try await exchange(Data(code.utf8), endpoint: endpoint, pairing: true, timeout: 3)
+    }
+
+    private func sendPairingMessage(_ packet: Data, to endpoint: NWEndpoint) async throws -> String {
+        try Task.checkCancellation()
+        let response = try await exchange(packet, endpoint: endpoint, pairing: true, timeout: 3)
         guard let value = String(data: response, encoding: .utf8) else { throw RelayFailure.invalid }
         return value
     }

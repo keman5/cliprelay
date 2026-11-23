@@ -378,6 +378,12 @@ enum QA {
         let lanInvite = try PairingCard.parse(offered)
         let pin = lanCard.shortCode
         let wrongPin = pin == "000000" ? "000001" : "000000"
+        let lookup = try device("Delayed discovery")
+        async let discoveredInvitation = lookup.findPairing(pin)
+        try await Task.sleep(for: .seconds(1))
+        lookup.startBrowsing()
+        guard try await discoveredInvitation.challenge == lanCard.challenge else { throw RelayFailure.invalid }
+        print("QA found the six-digit invitation after Bonjour became available")
         let found = try await sender.findPairing(pin, address: "127.0.0.1:48233")
         guard PairingCard.isShortCode(pin), found.challenge == lanInvite.challenge,
               (try? await sender.findPairing(wrongPin, address: "127.0.0.1:48233")) == nil,
