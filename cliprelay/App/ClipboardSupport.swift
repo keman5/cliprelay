@@ -91,7 +91,7 @@ private func unnamedClipboardItem(_ index: Int) -> String {
     let text = item.string(forType: .string)
     for type in [NSPasteboard.PasteboardType.rtf, .html] {
         if let data = item.data(forType: type) {
-            return Clip(name: String((text ?? type.rawValue).prefix(80)), type: type.rawValue, bytes: data, plain: text)
+            return Clip(name: Clip.preview(text ?? type.rawValue), type: type.rawValue, bytes: data, plain: text)
         }
     }
     guard let text, !text.isEmpty else { throw RelayFailure.invalid }
@@ -151,10 +151,10 @@ struct HistoryItemLabel: View {
     }
 }
 
-func materialize(_ clip: Clip) throws -> URL {
+func materialize(_ clip: Clip, directoryID: UUID? = nil) throws -> URL {
     let dir = FileManager.default.temporaryDirectory
         .appendingPathComponent("cc.macseek.cliprelay", isDirectory: true)
-        .appendingPathComponent(clip.id.uuidString, isDirectory: true)
+        .appendingPathComponent((directoryID ?? clip.id).uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions: 0o700])
     var name = clip.kind == "File" ? URL(fileURLWithPath: clip.name).lastPathComponent : "ClipRelay"

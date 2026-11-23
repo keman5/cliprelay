@@ -3,10 +3,10 @@ import Foundation
 
 enum ExtensionDelivery {
     static func attempt(_ library: Library, ids: Set<String>) async {
-        guard !ids.isEmpty, let peers = try? library.peers(), !peers.isEmpty,
+        guard !ClipRelayPreferences.paused, !ids.isEmpty, let peers = try? library.peers(), !peers.isEmpty,
               let identity = try? Identity.load(name: "iPhone", createIfMissing: false) else { return }
-        let exchange = Exchange(library, identity)
-        exchange.startBrowsing()
+        let exchange = Exchange(library, identity, transferAllowed: { !ClipRelayPreferences.paused })
+        if ClipRelayPreferences.discoveryEnabled { exchange.startBrowsing() }
         let settings = ClipRelayPreferences.defaults
         let url = settings.string(forKey: "relay.url") ?? "https://cliprelay-test.macseek.cc"
         let cloud = settings.bool(forKey: "relay.enabled") ? try? Cloud(url, RelayCredential.read(address: url)) : nil

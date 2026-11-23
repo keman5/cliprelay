@@ -46,30 +46,41 @@ final class Share: UIViewController {
         let providers = (extensionContext?.inputItems as? [NSExtensionItem])?.flatMap { $0.attachments ?? [] } ?? []
         do {
             guard !providers.isEmpty, providers.count <= 10 else { throw RelayFailure.invalid }
+            guard !ClipboardPaste.isPrivate(providers) else { status.text = localized("Private clipboard content was skipped"); return }
             let library = try Library(Library.directory())
             var total = 0
-            for provider in providers {
-                let clip = try await ClipboardPaste.load(provider)
-                total += clip.bytes.count + (clip.plain?.utf8.count ?? 0)
-                guard total <= Clip.limit else { throw RelayFailure.tooLarge }
-                records.append(clip)
+            var skipped: [String] = []
+            for (index, provider) in providers.enumerated() {
+                do {
+                    let clip = try await ClipboardPaste.load(provider)
+                    let bytes = clip.bytes.count + (clip.plain?.utf8.count ?? 0)
+                    guard bytes <= Clip.limit - total else { throw RelayFailure.tooLarge }
+                    records.append(clip)
+                    total += bytes
+                } catch {
+                    let name = provider.suggestedName ?? String(format: localized("Item %lld"), index + 1)
+                    skipped.append(name + " · " + localized(error.localizedDescription))
+                }
             }
             self.library = library
-            status.text = records.prefix(5).map { item in
+            let accepted = records.map { item in
                 [item.name, localized(item.kind), ByteCountFormatter.string(fromByteCount: Int64(item.bytes.count), countStyle: .file)]
                     .joined(separator: " · ")
-            }.joined(separator: "\n")
+            }
+            status.text = (accepted + skipped).joined(separator: "\n")
+            guard !records.isEmpty else { return }
             let canSend = try !library.peers().isEmpty
             save.isEnabled = true
-            send.isEnabled = canSend
+            send.isEnabled = canSend && !ClipRelayPreferences.paused
         } catch { status.text = error.localizedDescription }
     }
 
     private func commit(send shouldSend: Bool) {
         guard let library else { return }
         do {
+            if shouldSend && ClipRelayPreferences.paused { status.text = localized("已暂停记录与同步"); return }
             if shouldSend, try library.peers().isEmpty { throw RelayFailure.unauthorized }
-            let ids = try library.saveCopies(records, source: "Share", sendToPeers: shouldSend)
+            let ids = try library.saveCopies(records, source: "Share", sendToPeers: shouldSend, privateToDevice: !shouldSend)
             guard shouldSend else {
                 extensionContext?.completeRequest(returningItems: nil)
                 return

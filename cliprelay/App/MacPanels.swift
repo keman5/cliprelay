@@ -309,38 +309,6 @@ struct MacSettingsCard<Content: View>: View {
     }
 }
 
-enum MacHistoryPrivacy {
-    static func isMasked(_ text: String, sensitive: Bool, codes: Bool, forDetail: Bool) -> Bool {
-        let code = text.range(of: #"^\s*[0-9]{4,8}\s*$|(?:验证码|verification code|one.time code|\bOTP\b)[^0-9]{0,16}[0-9]{4,8}\b"#,
-                              options: [.regularExpression, .caseInsensitive]) != nil
-        if code { return codes || (sensitive && !forDetail) }
-        return sensitive && !forDetail && text.range(
-            of: #"(?:密码|口令|password|passcode|api[_ -]?key|access[_ -]?token)\s*[:：=]\s*\S+"#,
-            options: [.regularExpression, .caseInsensitive]) != nil
-    }
-}
-
-enum MacHistoryAuthentication {
-    static let preference = "mac.requireBiometrics"
-
-    @MainActor static func verify(
-        _ reason: String,
-        required: Bool = UserDefaults.standard.bool(forKey: preference),
-        evaluate: (String) async throws -> Bool = { reason in
-            try await LAContext().evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
-        }
-    ) async throws -> Bool {
-        guard !Task.isCancelled else { return false }
-        guard required else { return true }
-        do {
-            let verified = try await evaluate(ClipRelayPreferences.localized(reason))
-            return verified && !Task.isCancelled
-        } catch let error as LAError where [.userCancel, .systemCancel, .appCancel, .userFallback].contains(error.code) {
-            return false
-        }
-    }
-}
-
 struct MacHistoryGate<Content: View>: View {
     @AppStorage(MacHistoryAuthentication.preference) private var required = false
     @State private var unlocked = false
@@ -422,11 +390,10 @@ struct MacSettingsPanel: View {
     @State private var credential = ""
     @State private var testing = false
     @State private var confirmRemove = false
-    @State private var launches = false
+    @State private var launchStatus = SMAppService.Status.notRegistered
     @State private var shortcutRecording = false
     @State private var shortcutMonitor: Any?
     @State private var confirmClear = false
-    @State private var confirmCacheClear = false
     @State private var confirmRetention = false
     @State private var pendingRetention = 0
     @State private var exporting = false
@@ -448,14 +415,21 @@ struct MacSettingsPanel: View {
             .frame(maxWidth: 780, alignment: .leading).padding(22)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onAppear { launches = SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval }
+        .onAppear { launchStatus = SMAppService.mainApp.status }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            launchStatus = SMAppService.mainApp.status
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in stopRecording() }
         .onDisappear { stopRecording() }
     }
 
     private var general: some View {
         VStack(alignment: .leading, spacing: 0) {
             row("开机时启动", "登录后自动运行菜单栏应用") {
-                Toggle("开机时启动", isOn: Binding(get: { launches }, set: setLaunch))
+                if launchStatus == .requiresApproval {
+                    Button("Approve in Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                }
+                Toggle("开机时启动", isOn: Binding(get: { launchStatus == .enabled }, set: setLaunch))
                     .labelsHidden().toggleStyle(.switch).macFeedbackTarget("settings.launch")
             }
             Divider()
@@ -464,16 +438,15 @@ struct MacSettingsPanel: View {
             toggle("同步提示音", "收到新剪贴板内容时播放提示音", $sound)
             Divider()
             row("唤起快捷键", "打开菜单栏弹窗") {
-                Text(shortcutTitle).font(.system(.callout, design: .monospaced))
+                Text(model.shortcutAvailable ? shortcutTitle : ClipRelayPreferences.localized("Menu shortcut is unavailable")).font(.system(.callout, design: .monospaced))
                 Button(shortcutRecording ? "取消录制" : "录制新快捷键") {
                     if shortcutRecording { stopRecording() } else { recordShortcut() }
                 }
                 Button("Restore default shortcut") {
                     stopRecording()
-                    keyCode = MacMenuShortcut.defaultKeyCode
-                    modifiers = MacMenuShortcut.defaultModifiers
+                    applyShortcut(MacMenuShortcut.defaultKeyCode, MacMenuShortcut.defaultModifiers)
                 }
-                .disabled(!shortcutRecording && keyCode == MacMenuShortcut.defaultKeyCode && modifiers == MacMenuShortcut.defaultModifiers)
+                .disabled(model.shortcutAvailable && !shortcutRecording && keyCode == MacMenuShortcut.defaultKeyCode && modifiers == MacMenuShortcut.defaultModifiers)
                 .macFeedbackTarget("settings.shortcut")
             }
             Divider()
@@ -578,7 +551,7 @@ struct MacSettingsPanel: View {
                         Text("7 天").tag(168)
                         Text("30 天").tag(720)
                         Text("永久").tag(0)
-                    }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                    }.pickerStyle(.segmented).labelsHidden().fixedSize().macFeedbackTarget("settings.retention")
                 }
                 Divider()
                 let bytes = (try? model.library?.usage().historyBytes) ?? 0
@@ -587,28 +560,31 @@ struct MacSettingsPanel: View {
                 }
                 Divider()
                 row("History", "Manage local clipboard data") {
-                    Button("清理缓存", role: .destructive) { confirmCacheClear = true }
-                        .foregroundStyle(.red).macFeedbackTarget("settings.clearCache")
                     Button("导出全部历史", action: exportHistory)
                         .disabled(exporting || model.library == nil).macFeedbackTarget("settings.export")
                     Button("清空全部历史", role: .destructive) { confirmClear = true }
                         .foregroundStyle(.red).macFeedbackTarget("settings.clearHistory")
                 }
             }
+            MacSettingsCard(title: "List cache") {
+                row("History", "Release cached history rows from memory") {
+                    Button("Clear list cache") {
+                        model.library?.clearReadCache()
+                        model.showMacFeedback(ClipRelayPreferences.localized("已清理读取缓存"), at: "settings.clearCache")
+                    }.macFeedbackTarget("settings.clearCache").disabled(model.library == nil)
+                }
+            }
             ArchiveSettings(model: model)
             DiagnosticsSection(model: model)
-        }
-        .alert("Clear cache?", isPresented: $confirmCacheClear) {
-            Button("取消", role: .cancel) {}
-            Button("清理缓存", role: .destructive) {
-                model.library?.clearReadCache()
-                model.showMacFeedback(ClipRelayPreferences.localized("已清理读取缓存"), at: "settings.clearCache")
-            }
         }
         .alert("清空全部历史？", isPresented: $confirmClear) {
             Button("取消", role: .cancel) {}
             Button("清空全部历史", role: .destructive) {
-                model.macOperation(at: "settings.clearHistory") { try model.library?.clearHistory() }
+                authorizeHistoryChange(at: "settings.clearHistory") {
+                    guard let library = model.library else { throw RelayFailure.storage }
+                    try library.clearHistory()
+                    model.macClipboardReport = ""
+                }
             }
         } message: {
             Text("这会删除这台 Mac 的全部剪贴板历史和待发送条目，操作不可撤销。")
@@ -616,11 +592,20 @@ struct MacSettingsPanel: View {
         .alert("缩短历史保留时长？", isPresented: $confirmRetention) {
             Button("取消", role: .cancel) {}
             Button("应用", role: .destructive) {
-                retentionHours = pendingRetention
-                model.reload()
+                let hours = pendingRetention
+                authorizeHistoryChange(at: "settings.retention") { retentionHours = hours }
             }
         } message: {
             Text("超过新期限的本机历史会自动删除，置顶条目会保留。")
+        }
+    }
+
+    private func authorizeHistoryChange(at target: String, _ change: @escaping () throws -> Void) {
+        Task { @MainActor in
+            do {
+                guard try await MacHistoryAuthentication.verify("Verify to delete clipboard history") else { return }
+                model.macOperation(at: target, change)
+            } catch { model.showMacFeedback(error.localizedDescription, at: target) }
         }
     }
 
@@ -652,10 +637,14 @@ struct MacSettingsPanel: View {
     }
 
     private func setLaunch(_ value: Bool) {
+        defer { launchStatus = SMAppService.mainApp.status }
+        if value && SMAppService.mainApp.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+            return
+        }
         do {
             if value { try SMAppService.mainApp.register() }
             else { try SMAppService.mainApp.unregister() }
-            launches = value
             if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
         } catch { model.showMacFeedback(error.localizedDescription, at: "settings.launch") }
     }
@@ -689,6 +678,12 @@ struct MacSettingsPanel: View {
         return glyphs + (ansiKeys[keyCode] ?? " [\(keyCode)]")
     }
 
+    private func applyShortcut(_ key: Int, _ flags: Int) {
+        guard model.menuController?.registerShortcut(key: key, modifiers: flags) == true else { return }
+        keyCode = key
+        modifiers = flags
+    }
+
     private func recordShortcut() {
         shortcutRecording = true
         shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -701,8 +696,7 @@ struct MacSettingsPanel: View {
             if flags.contains(.control) { carbon |= controlKey }
             if flags.contains(.shift) { carbon |= shiftKey }
             guard carbon & (cmdKey | optionKey | controlKey) != 0 else { return nil }
-            keyCode = Int(event.keyCode)
-            modifiers = carbon
+            applyShortcut(Int(event.keyCode), carbon)
             stopRecording()
             return nil
         }
@@ -743,13 +737,7 @@ struct MacSettingsPanel: View {
                 let sensitive = maskSensitive
                 let codes = maskCodes
                 try await Task.detached {
-                    let data = try library.archiveIDs().map { record in
-                        let clip = try library.clip(record.id)
-                        let value = clip.text ?? clip.name
-                        let protected = MacHistoryPrivacy.isMasked(value, sensitive: sensitive, codes: codes, forDetail: false)
-                        return "[\(record.captured.ISO8601Format())] \(record.source) · \(protected ? "******" : value)"
-                    }.joined(separator: "\n")
-                    try Data(data.utf8).write(to: url, options: .atomic)
+                    try library.exportText(to: url, sensitive: sensitive, codes: codes)
                 }.value
                 model.showMacFeedback(ClipRelayPreferences.localized("已导出历史"), at: "settings.export")
             } catch { model.showMacFeedback(error.localizedDescription, at: "settings.export") }
@@ -804,19 +792,11 @@ struct MacAboutPanel: View {
     }
 
     private func checkForUpdate() async {
-        struct Release: Decodable { let tag_name: String }
         checking = true
         defer { checking = false }
         do {
-            let api = URL(string: "https://api.github.com/repos/keman5/cliprelay/releases/latest")!
-            let (data, response) = try await URLSession.shared.data(from: api)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw RelayFailure.unavailable }
-            let release = try JSONDecoder().decode(Release.self, from: data)
+            let message = try await ReleaseCheck.message()
             lastCheck = Date.now.timeIntervalSince1970
-            let latest = release.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-            let message = latest.compare(version, options: .numeric) == .orderedDescending
-                ? String(localized: "发现新版本 \(latest)。请在项目主页查看。")
-                : String(localized: "已是最新版本")
             model.showMacFeedback(message, at: "about.update")
         } catch { model.showMacFeedback(error.localizedDescription, at: "about.update") }
     }

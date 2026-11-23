@@ -4,74 +4,6 @@ import Carbon
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum MacClipKind: String, CaseIterable, Identifiable {
-    case text, link, code, image, document, pdf, archive
-    var id: Self { self }
-    var title: String {
-        switch self {
-        case .text: ClipRelayPreferences.localized("Text")
-        case .link: ClipRelayPreferences.localized("Link")
-        case .code: ClipRelayPreferences.localized("Code")
-        case .image: ClipRelayPreferences.localized("Image")
-        case .document: ClipRelayPreferences.localized("Document")
-        case .pdf: "PDF"
-        case .archive: ClipRelayPreferences.localized("Archive")
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .text: "textformat"
-        case .link: "link"
-        case .code: "chevron.left.forwardslash.chevron.right"
-        case .image: "photo"
-        case .document: "doc.text"
-        case .pdf: "doc.richtext"
-        case .archive: "doc.zipper"
-        }
-    }
-    var color: Color {
-        switch self {
-        case .text: .teal
-        case .link: .blue
-        case .code: .purple
-        case .image: .pink
-        case .document: .indigo
-        case .pdf: .red
-        case .archive: .orange
-        }
-    }
-}
-
-extension Summary {
-    var macKind: MacClipKind {
-        if kind == "Image" { return .image }
-        if kind == "File" {
-            let ext = (name as NSString).pathExtension.lowercased()
-            let uti = type.flatMap { UTType($0) }
-            if uti?.conforms(to: .pdf) == true || ext == "pdf" { return .pdf }
-            if uti?.conforms(to: .archive) == true || ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"].contains(ext) { return .archive }
-            if ["swift", "js", "ts", "py", "go", "rs", "sh", "html", "css", "json"].contains(ext) { return .code }
-            return .document
-        }
-        if let url = URL(string: name), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-           url.host != nil, !name.contains(where: \.isWhitespace) { return .link }
-        if name.range(of: #"(?m)^(import |func |let |const |class |sudo |swift |npm |git |#!)|[{};].*[{};]"#, options: .regularExpression) != nil { return .code }
-        return .text
-    }
-
-    var macFormat: String {
-        if let type, let uti = UTType(type), !uti.isDynamic, uti != .data {
-            if let ext = uti.preferredFilenameExtension { return ext.uppercased() }
-            if let description = uti.localizedDescription { return description }
-        }
-        let ext = (name as NSString).pathExtension
-        if kind == "File", !ext.isEmpty { return ext.uppercased() }
-        return ClipRelayPreferences.localized(kind)
-    }
-
-    var macDisplayDate: Date? { lastCopied ?? date }
-}
-
 struct MacHistorySession {
     private(set) var rows: [Summary] = []
 
@@ -115,6 +47,7 @@ struct MacHistory: View {
     @State private var batch = false
     @State private var checked: Set<String> = []
     @State private var confirming = false
+    @State private var deletionIDs: Set<String> = []
     @State private var filter: Filter?
 
     private enum Source: Hashable {
@@ -139,7 +72,7 @@ struct MacHistory: View {
         }
     }
     private func matchesKind(_ row: Summary) -> Bool {
-        (!pinnedOnly && kinds.isEmpty) || kinds.contains(row.macKind) || (pinnedOnly && row.pinned)
+        (kinds.isEmpty || kinds.contains(row.macKind)) && (!pinnedOnly || row.pinned)
     }
     private func matchesSource(_ row: Summary) -> Bool { sources.isEmpty || sources.contains(source(for: row)) }
     private func source(for row: Summary) -> Source {
@@ -319,6 +252,9 @@ struct MacHistory: View {
                             .font(.system(size: 13)).foregroundStyle(palette.secondary)
                             .frame(maxWidth: .infinity).padding(.vertical, 36)
                     }
+                    if !query.isEmpty && matches?.request != search {
+                        ProgressView("Searching…").controlSize(.small).padding()
+                    }
                     ForEach(rows) { row in
                         Button { activate(row) } label: { rowLabel(row) }
                             .buttonStyle(.plain)
@@ -381,26 +317,27 @@ struct MacHistory: View {
     }
 
     private var batchBar: some View {
-        HStack(spacing: 8) {
-            Text("\(checked.count) selected").foregroundStyle(palette.secondary)
+        let visibleSelection = checked.intersection(rows.map(\.id))
+        return HStack(spacing: 8) {
+            Text("\(visibleSelection.count) selected").foregroundStyle(palette.secondary)
             Button("Pin") {
-                let pinned = model.macOperation(at: "history.batch.pin") { try model.library?.setPinned(checked) }
+                let pinned = model.macOperation(at: "history.batch.pin") { try model.library?.setPinned(visibleSelection) }
                 if pinned { finishBatch() }
-            }.disabled(checked.isEmpty).macFeedbackTarget("history.batch.pin")
-            Button("Delete", role: .destructive) { confirming = true }
+            }.disabled(visibleSelection.isEmpty).macFeedbackTarget("history.batch.pin")
+            Button("Delete", role: .destructive) { deletionIDs = visibleSelection; confirming = true }
                 .foregroundStyle(.red)
-                .disabled(checked.isEmpty)
+                .disabled(visibleSelection.isEmpty)
                 .macFeedbackTarget("history.batch.delete")
             Button("Done") { finishBatch() }
             Spacer()
         }
         .font(.system(size: 12)).padding(8)
         .background(palette.accentSoft)
-        .background(MacDeleteShortcut(enabled: !checked.isEmpty && filter == nil && focused != .search) { confirming = true })
-        .alert("Confirm deletion of \(checked.count) items", isPresented: $confirming) {
+        .background(MacDeleteShortcut(enabled: !visibleSelection.isEmpty && filter == nil && focused != .search) { deletionIDs = visibleSelection; confirming = true })
+        .alert("Confirm deletion of \(deletionIDs.count) items", isPresented: $confirming) {
             Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("Delete", role: .destructive) {
-                let deleted = model.macOperation(at: "history.batch.delete") { try model.library?.deleteClips(checked) }
+                let deleted = model.macOperation(at: "history.batch.delete") { try model.library?.deleteClips(deletionIDs) }
                 if deleted { finishBatch() }
             }
         }

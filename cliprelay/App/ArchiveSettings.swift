@@ -12,6 +12,9 @@ struct ArchiveSettings: View {
     @State private var confirm = false
     @State private var contents: ClipArchive.Contents?
     @State private var exportURL: URL?
+    #if os(iOS)
+    @State private var sharingBackup = false
+    #endif
 
     var body: some View {
         #if os(macOS)
@@ -96,7 +99,15 @@ struct ArchiveSettings: View {
         .disabled(working)
         .macFeedbackTarget("backup.share")
         #else
-        ShareLink(item: url) { Label("Share encrypted backup", systemImage: "square.and.arrow.up") }
+        Button {
+            Task {
+                do {
+                    guard try await MacHistoryAuthentication.verify("Verify to share an encrypted backup") else { return }
+                    sharingBackup = true
+                } catch { model.notice = error.localizedDescription }
+            }
+        } label: { Label("Share encrypted backup", systemImage: "square.and.arrow.up") }
+        .sheet(isPresented: $sharingBackup) { PhoneShare(url: url) }
         #endif
     }
 
@@ -137,8 +148,8 @@ struct ArchiveSettings: View {
         Task { @MainActor in
             defer { working = false }
             do {
-                #if os(macOS)
                 guard try await MacHistoryAuthentication.verify("Verify to create an encrypted backup") else { return }
+                #if os(macOS)
                 if password == secret { password = "" }
                 #endif
                 let newURL = try await Task.detached {

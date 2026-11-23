@@ -139,13 +139,15 @@ struct MenuContent: View {
 
             ScrollView {
                 if rows.isEmpty && (search.query.isEmpty || matches?.request == search) {
-                    Text(search.query.isEmpty ? "No clipboard history" : "No matching items")
+                    Text(search.query.isEmpty && !pinnedOnly && kind == nil ? "No clipboard history" : "No matching items")
                         .font(.system(size: 13))
                         .foregroundStyle(palette.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 28)
                         .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(palette.line, style: StrokeStyle(dash: [4, 4])) }
                         .padding(14)
+                } else if !search.query.isEmpty && matches?.request != search {
+                    ProgressView("Searching…").controlSize(.small).padding()
                 } else {
                     LazyVStack(spacing: 0) {
                         ForEach(rows) { row in
@@ -308,6 +310,7 @@ private struct MacMenuRowStyle: ButtonStyle {
 
     func configure(model: Model, openMain: @escaping () -> Void) {
         self.model = model
+        model.menuController = self
         self.openMain = openMain
         guard status == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -318,6 +321,10 @@ private struct MacMenuRowStyle: ButtonStyle {
         status = item
         popover.behavior = .transient
         popover.animates = false
+    }
+
+    private func installShortcutHandler() {
+        guard handler == nil else { return }
         var event = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
             guard let context else { return OSStatus(eventNotHandledErr) }
@@ -329,20 +336,32 @@ private struct MacMenuRowStyle: ButtonStyle {
 
     func preferences(visible: Bool, key: Int, modifiers: Int) {
         status?.isVisible = visible
+        _ = registerShortcut(key: key, modifiers: modifiers)
+    }
+
+    func registerShortcut(key: Int, modifiers: Int) -> Bool {
+        installShortcutHandler()
+        if registeredShortcut?.key == key, registeredShortcut?.modifiers == modifiers { return true }
         guard handler != nil,
-              registeredShortcut?.key != key || registeredShortcut?.modifiers != modifiers,
               let keyCode = UInt32(exactly: key), let modifierFlags = UInt32(exactly: modifiers)
-        else { return }
+        else { return false }
         let identifier = EventHotKeyID(signature: 0x436C6950, id: 1)
         var replacement: EventHotKeyRef?
         let result = RegisterEventHotKey(keyCode, modifierFlags, identifier, GetApplicationEventTarget(), 0, &replacement)
         guard result == noErr else {
             model?.showMacFeedback(ClipRelayPreferences.localized("Menu shortcut is unavailable"), at: "settings.shortcut")
-            return
+            return false
         }
         if let hotKey { UnregisterEventHotKey(hotKey) }
         hotKey = replacement
         registeredShortcut = (key, modifiers)
+        model?.shortcutAvailable = true
+        return true
+    }
+
+    isolated deinit {
+        if let hotKey { UnregisterEventHotKey(hotKey) }
+        if let handler { RemoveEventHandler(handler) }
     }
 
     @objc private func statusPressed() {

@@ -1,5 +1,6 @@
 #if os(macOS) && DEBUG
 import AppKit
+import Carbon
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -32,6 +33,18 @@ enum MacViewCheck {
         try checkCopyOrder(in: root.appendingPathComponent("copy-order"))
         try checkLongHistorySearch(in: root.appendingPathComponent("long-search"))
         try checkExclusions()
+        let shortcuts = MacMenuController()
+        let flags = cmdKey | optionKey | controlKey | shiftKey
+        var occupied: EventHotKeyRef?
+        let id = EventHotKeyID(signature: 0x51544352, id: 22)
+        guard RegisterEventHotKey(UInt32(kVK_F18), UInt32(flags), id, GetApplicationEventTarget(),
+                                  UInt32(kEventHotKeyExclusive), &occupied) == noErr, let occupied else { throw RelayFailure.invalid }
+        defer { UnregisterEventHotKey(occupied) }
+        guard shortcuts.registerShortcut(key: kVK_F19, modifiers: flags),
+              !shortcuts.registerShortcut(key: kVK_F18, modifiers: flags),
+              shortcuts.registerShortcut(key: kVK_F19, modifiers: flags)
+        else { throw RelayFailure.invalid }
+        print("PASS conflicting shortcut rejected while previous shortcut remains registered")
         try checkSettings(in: root.appendingPathComponent("settings"))
         let size = NSSize(width: 980, height: 600)
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -4000, y: -4000), size: size),
@@ -362,7 +375,9 @@ enum MacViewCheck {
               try library.sharedSends(peer) == [prior.id.uuidString]
         else { throw RelayFailure.invalid }
 
+        model.recordTransfer("Cloud")
         let restarted = Model(clipboardSettings: settings)
+        guard restarted.lastTransferRoute == "Cloud", restarted.macNearbyPeers.isEmpty else { throw RelayFailure.invalid }
         restarted.transfer = model.transfer
         guard restarted.macPauseUntil == end,
               restarted.newClipboardVersion(in: board, at: end) == nil,
@@ -683,8 +698,28 @@ enum MacViewCheck {
         let ids = try Set(library.page().map(\.id))
         guard ids == [pinned.id.uuidString, fresh.id.uuidString] else { throw RelayFailure.invalid }
 
+        let receipt = TerminalReceipt(id: UUID(), clip: fresh.id, digest: "qa")
+        let wire = Data([1, 2, 3])
+        let before = try library.usage()
+        try library.save(fresh, source: "QA", terminalReceipt: (receipt, peer, wire))
+        let queued = try library.usage()
+        guard queued.jobs == before.jobs + 1, queued.queuedBytes == before.queuedBytes + Int64(wire.count)
+        else { throw RelayFailure.invalid }
+        library.clearReadCache()
+        guard try library.recordCount(kind: "") == ids.count else { throw RelayFailure.invalid }
+        let emoji = String(repeating: "👨‍👩‍👧‍👦", count: 80)
+        let unicodeClip = Clip.text(emoji)
+        try unicodeClip.validate()
+        guard unicodeClip.text == emoji, unicodeClip.name.utf8.count <= 512 else { throw RelayFailure.invalid }
+        let filename = String(repeating: "a", count: 130) + ".txt"
+        let url = root.appendingPathComponent(filename)
+        try wire.write(to: url)
+        guard try fileClip(url).name == filename else { throw RelayFailure.invalid }
+        do { _ = try fileClip(root); throw RelayFailure.invalid }
+        catch RelayFailure.unsupportedFile {}
         try library.clearHistory()
         guard try library.page().isEmpty, try library.sharedSends(peer).isEmpty,
+              try library.usage().jobs == 0, try library.terminalReceipts(to: peer).isEmpty,
               try library.pairingDate(peer) == paired else { throw RelayFailure.invalid }
         try library.unpair(peer)
         guard try library.pairingDate(peer) == nil,

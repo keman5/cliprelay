@@ -40,20 +40,14 @@ final class Exchange {
         let id: UUID
         let wire: Data
     }
-    var didReceive: (() -> Void)?
+    var didReceive: ((String) -> Void)?
+    var didSend: ((String) -> Void)?
+    var listenerChanged: (@MainActor (NWError?) -> Void)?
     var didUpdateDelivery: (() -> Void)?
     init(_ library: Library, _ me: Identity, mode: Mode = .legacy, forwardingAllowed: @escaping () -> Bool = {
-        #if os(macOS)
         UserDefaults.standard.bool(forKey: "relay.lanForwarding")
-        #else
-        false
-        #endif
     }, directoryAllowed: @escaping () -> Bool = {
-        #if os(macOS)
         UserDefaults.standard.bool(forKey: "relay.publishDirectory")
-        #else
-        false
-        #endif
     }, transferAllowed: @escaping () -> Bool = { true }) {
         self.library = library
         self.me = me
@@ -67,13 +61,26 @@ final class Exchange {
         let port = NWEndpoint.Port(rawValue: port == 0 ? (49_152 + preferred % 16_383) : port)!
         let listener = try NWListener(using:.tcp,on:port)
         listener.stateUpdateHandler = { [weak self, weak listener] state in
-            guard let self, case .ready = state, let port = listener?.port else { return }
-            let inviting = self.invitation != nil
-            DispatchQueue.main.async {
-                #if os(macOS)
-                guard UserDefaults.standard.object(forKey: "mac.lanDiscovery") as? Bool ?? true else { return }
-                #endif
-                self.publishLAN(port.rawValue, inviting: inviting)
+            guard let self, let listener else { return }
+            switch state {
+            case .ready:
+                guard let port = listener.port else { return }
+                let inviting = self.invitation != nil
+                DispatchQueue.main.async {
+                    guard self.io.sync(execute: { self.listener === listener }) else { return }
+                    self.listenerChanged?(nil)
+                    guard ClipRelayPreferences.discoveryEnabled else { return }
+                    self.publishLAN(port.rawValue, inviting: inviting)
+                }
+            case .failed(let error):
+                listener.cancel()
+                DispatchQueue.main.async {
+                    guard self.io.sync(execute: { self.listener === listener }) else { return }
+                    self.advertisement?.stop()
+                    self.advertisement = nil
+                    self.listenerChanged?(error)
+                }
+            default: break
             }
         }
         listener.newConnectionHandler = { [weak self] c in
@@ -90,12 +97,8 @@ final class Exchange {
                 } catch {c.cancel()}
             }
         }
-        listener.start(queue:io); self.listener=listener
-        #if os(macOS)
-        if UserDefaults.standard.object(forKey: "mac.lanDiscovery") as? Bool ?? true { startBrowsing() }
-        #else
-        startBrowsing()
-        #endif
+        io.sync { self.listener = listener; listener.start(queue: io) }
+        if ClipRelayPreferences.discoveryEnabled { startBrowsing() }
     }
 
     private func publishLAN(_ port: UInt16, inviting: Bool) {
@@ -106,7 +109,6 @@ final class Exchange {
         service.publish()
     }
 
-    #if os(macOS)
     func setLANDiscovery(_ enabled: Bool) {
         if enabled {
             startBrowsing()
@@ -123,7 +125,6 @@ final class Exchange {
             }
         }
     }
-    #endif
 
     func startBrowsing() {
         io.sync {
@@ -390,7 +391,7 @@ final class Exchange {
                 let (body, origin) = try inner.open(me, peers: peers)
                 let clip = try Codec.read(Clip.self, body)
                 guard clip.id == forward.id else { throw RelayFailure.invalid }
-                try saveRelayed(clip, wire: forward.wire, from: origin)
+                try saveRelayed(clip, wire: forward.wire, from: origin, route: "LAN Relay")
             }
             return try Envelope.seal(Data(forward.id.uuidString.utf8), from: me, to: hub, purpose: "relay-delivery-ack")
         }
@@ -401,7 +402,7 @@ final class Exchange {
         let inner = try Codec.read(Envelope.self, forward.wire)
         guard inner.sender == sender.id, inner.recipient != me.peer.id else { throw RelayFailure.unauthorized }
         try library.stageForward(forward.id.uuidString, origin: sender.id, peer: inner.recipient, wire: forward.wire)
-        didReceive?()
+        didUpdateDelivery?()
         return try Envelope.seal(Data(forward.id.uuidString.utf8), from: me, to: sender, purpose: "forward-ack")
     }
     func refreshDirectory(at address: NWEndpoint? = nil) async throws {
@@ -426,10 +427,10 @@ final class Exchange {
     private func save(_ data: Data, from peer: Peer) throws -> Clip {
         let clip=try Codec.read(Clip.self,data)
         try library.save(clip,source:peer.name,received:true)
-        didReceive?()
+        didReceive?("LAN")
         return clip
     }
-    private func saveRelayed(_ clip: Clip, wire: Data, from peer: Peer) throws {
+    private func saveRelayed(_ clip: Clip, wire: Data, from peer: Peer, route: String) throws {
         var terminalReceipt: (TerminalReceipt, Peer, Data)?
         if clip.relayReceiptRequested == true {
             let receipt = TerminalReceipt(id: UUID(), clip: clip.id, digest: Codec.hash(wire))
@@ -437,7 +438,7 @@ final class Exchange {
             terminalReceipt = (receipt, peer, reply)
         }
         try library.save(clip, source: peer.name, received: true, terminalReceipt: terminalReceipt)
-        didReceive?()
+        didReceive?(route)
     }
     private func receiveTerminalReceipt(_ envelope: Envelope, peers: [Peer], expectedID: UUID? = nil) throws -> (id: UUID, peer: Peer)? {
         guard envelope.ciphertext.count < 4096,
@@ -589,6 +590,7 @@ final class Exchange {
                 state = .relayed
             }
             try library.delivered(id, peer: peer, state: state)
+            if let route = routes.last { didSend?(route) }
         }
         return routes
     }
@@ -641,6 +643,7 @@ final class Exchange {
                 routes.append("Cloud")
             }
             try library.forwarded(job.id, origin: job.origin, to: peer)
+            if let route = routes.last { didSend?(route) }
         }
         return routes
     }
@@ -663,7 +666,7 @@ final class Exchange {
                 guard let (data, peer) = try? envelope.open(me,peers:peers),
                       let clip = try? Codec.read(Clip.self,data), uuid == clip.id,
                       (try? clip.validate()) != nil else { continue }
-                try saveRelayed(clip, wire: wire, from: peer)
+                try saveRelayed(clip, wire: wire, from: peer, route: "Cloud")
                 try await cloud.remove(me,id);count+=1
             }
             cursor=page.cursor

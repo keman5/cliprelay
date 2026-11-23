@@ -3,6 +3,7 @@
 <key>CFBundleDisplayName</key><string>ClipRelay</string>
 <key>NSLocalNetworkUsageDescription</key><string>Find paired devices and exchange encrypted clipboard items on your network.</string>
 <key>NSBonjourServices</key><array><string>_cliprelay._tcp</string></array>
+<key>NSFaceIDUsageDescription</key><string>Unlock your clipboard history and authorize exports.</string>
 <key>NSCameraUsageDescription</key><string>Scan a device pairing QR code.</string>
 <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
 <key>UILaunchScreen</key><dict/>

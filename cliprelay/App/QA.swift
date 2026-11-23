@@ -10,7 +10,7 @@ import LocalAuthentication
 enum QA {
     static var active:Bool {
         let arguments = ProcessInfo.processInfo.arguments
-        return arguments.contains("--relay-qa") || arguments.contains("--view-qa")
+        return arguments.contains("--relay-qa") || arguments.contains("--view-qa") || arguments.contains("--network-qa")
     }
     static func run() async {
         #if os(macOS)
@@ -39,6 +39,19 @@ enum QA {
             let backup = dir.appendingPathComponent("phone.clipnote")
             let backupPass = "fixture " + "archive"
             #if os(iOS)
+            let suite = "cliprelay.qa.pause." + UUID().uuidString
+            guard let store = UserDefaults(suiteName: suite) else { throw RelayFailure.storage }
+            defer { store.removePersistentDomain(forName: suite) }
+            ClipRelayPreferences.updateCaptureBaselines(version: 1, pausing: true, store: store)
+            store.set(Date.now.addingTimeInterval(900).timeIntervalSince1970, forKey: "clipboard.pauseUntil")
+            let phoneKey = ClipRelayPreferences.phoneCaptureKey, keyboardKey = ClipRelayPreferences.keyboardCaptureKey
+            guard ClipRelayPreferences.skipPausedCopy(version: 2, key: phoneKey, store: store) else { throw RelayFailure.invalid }
+            store.set(1.0, forKey: "clipboard.pauseUntil")
+            for key in [phoneKey, keyboardKey] {
+                guard ClipRelayPreferences.skipPausedCopy(version: 3, key: key, store: store),
+                      store.integer(forKey: key) == 3,
+                      !ClipRelayPreferences.skipPausedCopy(version: 4, key: key, store: store) else { throw RelayFailure.invalid }
+            }
             let source = try Library(dir.appendingPathComponent("exports"))
             let styled = Clip(name: "Styled", type: "public.rtf", bytes: Data(#"{\rtf1 Sample}"#.utf8), plain: "Sample")
             try source.save(styled, source: "iPhone")
@@ -292,6 +305,22 @@ enum QA {
         print("PASS clipboard history deduplicates content, keeps the latest source and preserves pinning")
     }
     #if os(macOS)
+    @MainActor private static func testListenerRecovery(_ exchange: Exchange, occupiedPort: UInt16) async throws {
+        let model = Model()
+        model.transfer = exchange
+        model.startMacListener(port: occupiedPort)
+        for _ in 0..<100 where model.listenerIssue == nil { try await Task.sleep(for: .milliseconds(30)) }
+        guard model.listenerIssue != nil, !model.ready else { throw RelayFailure.invalid }
+        let clip = Clip.text("Available offline")
+        try model.save([clip])
+        model.reload()
+        guard model.rows.first?.id == clip.id.uuidString else { throw RelayFailure.invalid }
+        model.startMacListener()
+        for _ in 0..<100 where !model.ready { try await Task.sleep(for: .milliseconds(30)) }
+        guard model.ready, model.listenerIssue == nil else { throw RelayFailure.invalid }
+        print("PASS listener failure preserves local history and retry restores listening")
+    }
+
     static func testForwarding(in dir: URL) async throws {
         func device(_ name: String, forwarding: Bool = false) throws -> Exchange {
             let key = Curve25519.KeyAgreement.PrivateKey().rawRepresentation
@@ -325,6 +354,7 @@ enum QA {
         try destination.start(port: 48234)
         try disabled.start(port: 48235)
         try await Task.sleep(nanoseconds: 350_000_000)
+        try await testListenerRecovery(device("Listener recovery"), occupiedPort: 48233)
         let lanCard = try PairingCard(hub.me.peer, addresses: ["127.0.0.1:48233"])
         hub.offerPairing(lanCard)
         let lanAddress = NWEndpoint.hostPort(host: "127.0.0.1", port: 48233)

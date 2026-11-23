@@ -103,12 +103,25 @@ struct MacWorkspace: View {
             }
             .scrollIndicators(.hidden)
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("Auto Sync", isOn: $automaticSend)
+                Toggle("自动发送新复制的内容", isOn: $automaticSend)
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .font(.system(size: 12, weight: .semibold))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.macLANConnected ? "Connected · Local Network Bonjour" : "Offline · On This Mac")
+                    if let until = model.macPauseUntil {
+                        Text("Paused until \(until, format: .dateTime.hour().minute())")
+                    }
+                    if let issue = model.listenerIssue {
+                        Button("Retry LAN listener") { model.startMacListener() }.help(issue)
+                    }
+                    TimelineView(.periodic(from: .now, by: 2)) { _ in
+                        let nearby = model.macNearbyPeers.count
+                        if nearby == 0 { Text("No paired devices nearby") }
+                        else { Text("\(nearby) nearby devices") }
+                    }
+                    if let route = model.lastTransferRoute {
+                        Text("Last transfer: \(ClipRelayPreferences.localized(route))")
+                    }
                     Text("HPKE end-to-end encryption")
                 }
                 .font(.system(size: 11))
@@ -306,6 +319,6 @@ extension Model {
         return peers.filter { discovered.contains($0.service) }
     }
 
-    var macLANConnected: Bool { !macNearbyPeers.isEmpty }
+
 }
 #endif

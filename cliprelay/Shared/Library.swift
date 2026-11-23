@@ -239,8 +239,10 @@ final class Library {
     func usage() throws -> Usage {
         let sql = """
             SELECT COUNT(DISTINCT content_key),COALESCE(SUM(length(data)),0),
-            (SELECT COUNT(*) FROM pending)+(SELECT COUNT(*) FROM forward)+(SELECT COUNT(*) FROM share_send),
+            (SELECT COUNT(*) FROM pending)+(SELECT COUNT(*) FROM forward)+(SELECT COUNT(*) FROM receipt_outbox)
+            +(SELECT COUNT(*) FROM share_send s WHERE NOT EXISTS (SELECT 1 FROM pending p WHERE p.id=s.id AND p.peer=s.peer)),
             (SELECT COALESCE(SUM(length(wire)),0) FROM pending)+(SELECT COALESCE(SUM(length(wire)),0) FROM forward)
+            +(SELECT COALESCE(SUM(length(wire)),0) FROM receipt_outbox)
             FROM clips
             """
         guard let value = try query(sql, [], { row in
@@ -382,12 +384,16 @@ final class Library {
             Int(sqlite3_column_int64($0, 0))
         }.first ?? 0
     }
+    func changeVersion() throws -> (Int64, Int64) {
+        lock.lock(); defer { lock.unlock() }
+        // External connections and this connection have separate SQLite change counters.
+        let external = try query("PRAGMA data_version") { sqlite3_column_int64($0, 0) }.first ?? 0
+        return (sqlite3_total_changes64(db), external)
+    }
     func page(kind:String="",search:String="",offset:Int=0,pinnedFirst:Bool=false) throws -> [Summary] {
         lock.lock(); defer { lock.unlock() }
         try purgeExpired()
-        // SQLite's data_version tracks other connections, total_changes tracks this one.
-        let external = try query("PRAGMA data_version") { sqlite3_column_int64($0, 0) }.first ?? 0
-        let version = (Int64(sqlite3_total_changes(db)), external)
+        let version = try changeVersion()
         if version != cacheVersion {
             cachedPages.removeAll(keepingCapacity: true)
             cacheVersion = version
@@ -515,7 +521,6 @@ final class Library {
         try run("DELETE FROM clips WHERE id=? AND received=1 AND id NOT IN (SELECT id FROM hub_history)", [.text(id)])
     }
 
-    #if os(macOS)
     private init(readOnly root: URL) throws {
         self.root = root
         guard sqlite3_open_v2(root.appendingPathComponent("history.sqlite").path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
@@ -556,7 +561,6 @@ final class Library {
             return first.historyRank > second.historyRank
         }
     }
-    #endif
 
     func archiveIDs() throws -> [(id: String, source: String, pinned: Bool, captured: Date)] {
         try purgeExpired()
@@ -645,10 +649,8 @@ final class Library {
                 try removeMatchingClips(id)
             } else {
                 try markRecent(id)
-                #if os(macOS)
                 try run("UPDATE clips SET last_copied=CAST(? AS REAL) WHERE id=?",
                         [.text(String(Date.now.timeIntervalSince1970)), .text(id)])
-                #endif
             }
             try run("COMMIT")
         } catch { try? run("ROLLBACK"); throw error }
@@ -672,7 +674,7 @@ final class Library {
         #if os(macOS)
         let hours = UserDefaults.standard.integer(forKey: "mac.historyRetentionHours")
         #else
-        let hours = 0
+        let hours = ClipRelayPreferences.defaults.integer(forKey: "phone.retentionHours")
         #endif
         let now = Date.now.timeIntervalSince1970
         let cutoff = now - Double(hours) * 3_600
@@ -693,7 +695,6 @@ final class Library {
         return true
     }
 
-    #if os(macOS)
     func clearHistory() throws {
         lock.lock(); defer { lock.unlock() }
         try run("BEGIN IMMEDIATE")
@@ -701,6 +702,8 @@ final class Library {
             try run("DELETE FROM share_send")
             try run("DELETE FROM pending")
             try run("DELETE FROM forward")
+            try run("DELETE FROM receipt_outbox")
+            try run("DELETE FROM hub_history")
             try run("DELETE FROM clips")
             try run("COMMIT")
         } catch { try? run("ROLLBACK"); throw error }
@@ -716,7 +719,6 @@ final class Library {
             Date(timeIntervalSince1970: sqlite3_column_double($0, 0))
         }.first
     }
-    #endif
 
     func pin(_ id: String) throws {
         try run("""

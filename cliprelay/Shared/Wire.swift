@@ -4,10 +4,11 @@ import Security
 import UniformTypeIdentifiers
 
 enum RelayFailure: LocalizedError {
-    case invalid, tooLarge, unauthorized, unavailable, storage
+    case invalid, tooLarge, unauthorized, unavailable, storage, unsupportedFile
     var errorDescription: String? {
         switch self {
         case .invalid: "Invalid ClipRelay data"
+        case .unsupportedFile: "Choose a regular file instead of a folder or symbolic link"
         case .tooLarge: "The item exceeds 10 MB"
         case .unauthorized: "Device not paired or credential rejected"
         case .unavailable: "Device or relay unavailable"
@@ -45,8 +46,18 @@ struct Clip: Codable, Identifiable {
         guard !bytes.isEmpty, name.utf8.count <= 512, !type.isEmpty, type.utf8.count < 160 else { throw RelayFailure.invalid }
         guard bytes.count + (plain?.utf8.count ?? 0) <= Self.limit else { throw RelayFailure.tooLarge }
     }
+    static func preview(_ value: String) -> String {
+        var result = ""
+        var bytes = 0
+        for character in value.prefix(80) {
+            bytes += character.utf8.count
+            guard bytes <= 512 else { return result.isEmpty ? "…" : result }
+            result.append(character)
+        }
+        return result
+    }
     static func text(_ value: String) -> Clip {
-        Clip(name: String(value.prefix(80)), type: UTType.utf8PlainText.identifier, bytes: Data(value.utf8))
+        Clip(name: preview(value), type: UTType.utf8PlainText.identifier, bytes: Data(value.utf8))
     }
     var text: String? {
         guard isFile != true else { return nil }

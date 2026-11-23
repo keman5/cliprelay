@@ -76,8 +76,8 @@ struct PairingSettings: View {
     @State private var scanning = false
     #if os(macOS)
     @AppStorage("clipboard.sendAutomatically") private var sendAutomatically = true
-    @State private var pairedPeer: Peer?
     #endif
+    @State private var pairedPeer: Peer?
     @State private var now = Date.now
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -99,10 +99,20 @@ struct PairingSettings: View {
                 }
             }
             #endif
+            #if os(iOS)
+            if let pairedPeer, model.peers.contains(pairedPeer), !guidingMacPairing {
+                Section("验证设备连接") { PhonePeerInfo(model: model, peer: pairedPeer).id(pairedPeer.id) }
+            }
+            #endif
+            #if os(iOS)
+            if !guidingMacPairing && !separateDeviceList && !model.peers.isEmpty { pairedDevices }
+            #endif
             if !guidingMacPairing { invitationControls }
             recipientControls
             if !guidingMacPairing {
+                #if os(macOS)
                 if !separateDeviceList { pairedDevices }
+                #endif
                 directoryControls
             }
         }
@@ -111,10 +121,10 @@ struct PairingSettings: View {
             if showInvitation { makeInvitation() }
             if let selectedNearbyService { await reviewNearby(selectedNearbyService) }
         }
+        #endif
         .onDisappear {
             if let card, approvalCode == nil { model.transfer?.offerPairing(nil, replacing: card.challenge) }
         }
-        #endif
         .onReceive(clock) { now = $0 }
         .task(id: waiting?.code) { await completeNearbyPairing() }
         .alert("Compare fingerprints on both devices", isPresented: Binding(
@@ -161,8 +171,12 @@ struct PairingSettings: View {
                 LabeledContent("TCP port", value: String(port))
             }
             if let me = model.transfer?.me.peer {
+                #if os(iOS)
+                DisclosureGroup(me.name) { PhonePeerInfo(model: model, peer: me, local: true) }
+                #else
                 Text(me.name)
                 fingerprint(me)
+                #endif
                 Button(card == nil ? "Show pairing code" : "Refresh pairing code", action: makeInvitation)
                     #if os(macOS)
                     .macFeedbackTarget("pairing.invitation")
@@ -322,6 +336,25 @@ struct PairingSettings: View {
             let direct = (try? model.library?.directPeers()) ?? []
             ForEach(model.peers) { peer in
                 let address = try? model.library?.lanAddress(peer)
+                #if os(iOS)
+                NavigationLink {
+                    Form {
+                        Section { PhonePeerInfo(model: model, peer: peer) }
+                        Section { PeerAddress(model: model, peer: peer) }
+                        if direct.contains(peer) {
+                            Button("Remove device", role: .destructive) { pendingRemoval = peer }
+                        }
+                    }.navigationTitle(peer.name).navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(peer.name).font(.headline)
+                            Text(discovered.contains(peer.service) ? "Found on local network" : address?.isEmpty == false ? "Local address configured" : "Not found on local network")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "laptopcomputer.and.iphone").foregroundStyle(.indigo) }
+                }
+                #else
                 HStack {
                     VStack(alignment: .leading) {
                         Text(peer.name)
@@ -344,6 +377,7 @@ struct PairingSettings: View {
                     }
                 }
                 PeerAddress(model: model, peer: peer)
+                #endif
             }
         }
     }
@@ -365,8 +399,10 @@ struct PairingSettings: View {
         Section("Member directory") {
             #if os(macOS)
             Toggle("Allow this Mac to relay on the local network", isOn: $forwarding)
-            Toggle("Publish paired devices", isOn: $publishDirectory)
+            #else
+            Toggle("Relay while app is open", isOn: $forwarding)
             #endif
+            Toggle("Publish paired devices", isOn: $publishDirectory)
             let direct = (try? model.library?.directPeers()) ?? []
             Picker("Trusted directory", selection: Binding(
                 get: { (try? model.library?.directoryOwner()) ?? "" },
@@ -485,9 +521,7 @@ struct PairingSettings: View {
             code = ""
             pairingStatus = nil
             model.reload()
-            #if os(macOS)
             pairedPeer = peer
-            #endif
             onPaired?(peer)
         } catch {
             invitationStatus = "Could not approve this request. Start a new invitation."
@@ -502,9 +536,7 @@ struct PairingSettings: View {
         code = ""
         pairingStatus = "Paired with \(peer.name)"
         model.reload()
-        #if os(macOS)
         pairedPeer = peer
-        #endif
         onPaired?(peer)
     }
 
