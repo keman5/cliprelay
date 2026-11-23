@@ -39,6 +39,17 @@ enum QA {
             let backup = dir.appendingPathComponent("phone.clipnote")
             let backupPass = "fixture " + "archive"
             #if os(iOS)
+            let address = "https://example.com/path?q=browser#section"
+            let urlProvider = NSItemProvider()
+            urlProvider.registerDataRepresentation(forTypeIdentifier: "public.url", visibility: .all) { complete in
+                complete(Data(address.utf8), nil)
+                return nil
+            }
+            let textProvider = NSItemProvider(object: "Copied text" as NSString)
+            let fileProvider = NSItemProvider(object: URL(fileURLWithPath: "/fixture") as NSURL)
+            guard try await ClipboardPaste.keyboardText([urlProvider]) == address,
+                  try await ClipboardPaste.keyboardText([textProvider]) == "Copied text",
+                  try await ClipboardPaste.keyboardText([fileProvider]) == nil else { throw RelayFailure.invalid }
             let suite = "cliprelay.qa.pause." + UUID().uuidString
             guard let store = UserDefaults(suiteName: suite) else { throw RelayFailure.storage }
             defer { store.removePersistentDomain(forName: suite) }
@@ -302,7 +313,11 @@ enum QA {
         guard try library.page(kind: "Pinned").isEmpty else { throw RelayFailure.invalid }
         try reopened.delete(row.id)
         guard try library.page().isEmpty else { throw RelayFailure.invalid }
-        print("PASS clipboard history deduplicates content, keeps the latest source and preserves pinning")
+        let copiedAfterDeletion = Clip.text("Same content")
+        try reopened.saveCopies([copiedAfterDeletion], source: "Safari")
+        let restored = try library.page()
+        guard restored.count == 1, restored.first?.id == copiedAfterDeletion.id.uuidString else { throw RelayFailure.invalid }
+        print("PASS clipboard history deduplicates content, preserves pinning and accepts a new copy after deletion")
     }
     #if os(macOS)
     @MainActor private static func testListenerRecovery(_ exchange: Exchange, occupiedPort: UInt16) async throws {

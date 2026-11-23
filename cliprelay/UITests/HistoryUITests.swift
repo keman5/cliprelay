@@ -1,6 +1,228 @@
 import XCTest
+import UIKit
 
 final class HistoryUITests: XCTestCase {
+    @MainActor func testKeyboardCapturesCopiedURL() {
+        continueAfterFailure = false
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.launch()
+        func named(_ labels: [String], in app: XCUIApplication) -> XCUIElement {
+            app.cells.staticTexts.matching(NSPredicate(format: "label IN %@", labels)).firstMatch
+        }
+        func open(_ labels: [String]) {
+            let item = named(labels, in: settings)
+            for _ in 0..<6 where !item.isHittable { settings.swipeUp() }
+            XCTAssertTrue(item.isHittable, settings.debugDescription)
+            item.tap()
+        }
+        open(["General", "通用"])
+        open(["Keyboard", "键盘"])
+        let keyboards = settings.cells["KEYBOARDS"]
+        for _ in 0..<6 where !settings.frame.contains(CGPoint(x: keyboards.frame.midX, y: keyboards.frame.midY)) {
+            settings.swipeDown()
+        }
+        XCTAssertTrue(keyboards.isHittable)
+        keyboards.tap()
+        let extensionName = ["ClipRelay", "随贴"]
+        if !named(extensionName, in: settings).exists {
+            settings.cells["AddNewKeyboard"].tap()
+            open(extensionName)
+        }
+        open(extensionName)
+        let fullAccess = settings.switches.matching(NSPredicate(format: "label IN %@", ["Allow Full Access", "允许完全访问"])).firstMatch
+        XCTAssertTrue(fullAccess.waitForExistence(timeout: 5))
+        if fullAccess.value as? String != "1" {
+            fullAccess.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+            let allow = settings.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Allow", "允许"])).firstMatch
+            if allow.waitForExistence(timeout: 3) { allow.tap() }
+        }
+        XCTAssertEqual(fullAccess.value as? String, "1")
+
+        let app = XCUIApplication()
+        app.launchArguments = ["--history-ui-qa", "-AppleLanguages", "(en)", "-setupGuide.dismissed", "YES", "-ui.language", "en"]
+        app.launch()
+        app.tabBars.buttons["Settings"].tap()
+        app.buttons["Keyboard preferences"].tap()
+        let capture = app.switches["Automatically save copied text and links"]
+        XCTAssertTrue(capture.waitForExistence(timeout: 5))
+        let manual = ProcessInfo.processInfo.environment["CLIPRELAY_KEYBOARD_MANUAL"] == "1"
+        let captureValue = manual ? "0" : "1"
+        if capture.value as? String != captureValue { capture.switches.firstMatch.tap() }
+        XCTAssertEqual(capture.value as? String, captureValue)
+        app.tabBars.buttons["History"].tap()
+        app.textFields["New text"].tap()
+        let globe = app.descendants(matching: .any).matching(NSPredicate(
+            format: "label IN %@", ["Next keyboard", "Globe", "下一个键盘", "切换键盘"]
+        )).firstMatch
+        let clipboardTab = app.buttons.matching(NSPredicate(format: "label IN %@", ["Clipboard", "剪贴板"])).firstMatch
+        if !clipboardTab.exists {
+            XCTAssertTrue(globe.waitForExistence(timeout: 5))
+            globe.press(forDuration: 0.8)
+            let keyboard = app.cells.matching(NSPredicate(
+                format: "label BEGINSWITH %@ OR label BEGINSWITH %@", "ClipRelay", "随贴"
+            )).firstMatch
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+            keyboard.tap()
+        }
+        XCTAssertTrue(clipboardTab.waitForExistence(timeout: 5))
+        let suffix = UUID().uuidString.prefix(8)
+        let url = URL(string: "https://example.com/keyboard?test=\(suffix)#clipboard")!
+        UIPasteboard.general.setItems([["public.url": url]], options: [.localOnly: true])
+        allowPasteIfAsked()
+        let saved = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", url.absoluteString)).firstMatch
+        if manual || !saved.waitForExistence(timeout: 3) {
+            let paste = app.descendants(matching: .any)["keyboard.paste"].firstMatch
+            XCTAssertTrue(paste.waitForExistence(timeout: 5))
+            paste.tap()
+        }
+        XCTAssertTrue(saved.waitForExistence(timeout: 8))
+    }
+
+    @MainActor func testSafariCopyLink() throws {
+        continueAfterFailure = false
+        let fixture = try XCTUnwrap(ProcessInfo.processInfo.environment["CLIPRELAY_SAFARI_URL"])
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        let app = openClipboardHistory()
+        let enable = app.buttons["Enable automatic saving"]
+        if enable.waitForExistence(timeout: 2) { enable.tap() }
+        safari.open(try XCTUnwrap(URL(string: fixture)))
+
+        let link = safari.links["ClipRelay test link"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        link.press(forDuration: 1.3)
+        let copy = safari.buttons.matching(NSPredicate(format: "label IN %@", ["Copy Link", "拷贝链接", "复制链接"])).firstMatch
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        copy.tap()
+        app.activate()
+        allowPasteIfAsked()
+        XCTAssertTrue(app.staticTexts[fixture + "?copied=link#history"].waitForExistence(timeout: 8))
+    }
+
+    @MainActor func testSafariCopyAddress() throws {
+        continueAfterFailure = false
+        let fixture = try XCTUnwrap(ProcessInfo.processInfo.environment["CLIPRELAY_SAFARI_URL"])
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        let app = openClipboardHistory()
+        let enable = app.buttons["Enable automatic saving"]
+        if enable.waitForExistence(timeout: 2) { enable.tap() }
+
+        let addressURL = fixture + "?copied=address#history"
+        let page = try XCTUnwrap(URL(string: addressURL))
+        func copyAddress() {
+            safari.open(page)
+            XCTAssertTrue(safari.links["ClipRelay test link"].waitForExistence(timeout: 5))
+            let address = safari.textFields.matching(NSPredicate(
+                format: "identifier IN %@", ["URL", "TabBarItemTitle"]
+            )).firstMatch
+            if address.exists {
+                address.press(forDuration: 1.2)
+            } else {
+                safari.coordinate(withNormalizedOffset: CGVector(dx: 0.54, dy: 0.93)).press(forDuration: 1.2)
+            }
+            let copy = safari.descendants(matching: .any).matching(
+                NSPredicate(format: "label IN %@", ["Copy", "拷贝", "复制"])
+            ).firstMatch
+            XCTAssertTrue(copy.waitForExistence(timeout: 6))
+            copy.tap()
+        }
+        copyAddress()
+        app.activate()
+        allowPasteIfAsked()
+        let rows = clipboardRows(in: app, startingWith: addressURL)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 8))
+        let removedID = deleteClipboardRow(rows.firstMatch, in: app)
+        safari.activate()
+        app.activate()
+        let unexpectedReturn = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"),
+                                                         object: rows.firstMatch)
+        unexpectedReturn.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [unexpectedReturn], timeout: 2), .completed)
+
+        copyAddress()
+        app.activate()
+        allowPasteIfAsked()
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 8), "Copying the same Safari address again should restore it to history")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNotEqual(rows.firstMatch.identifier, removedID)
+    }
+
+    @MainActor private func clipboardRows(in app: XCUIApplication, startingWith text: String) -> XCUIElementQuery {
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history.row.' AND label BEGINSWITH %@", text))
+    }
+
+    @MainActor @discardableResult private func deleteClipboardRow(_ row: XCUIElement, in app: XCUIApplication) -> String {
+        let id = row.identifier
+        app.buttons[id.replacingOccurrences(of: "history.row.", with: "history.actions.")].tap()
+        app.buttons["Delete"].tap()
+        app.alerts["Delete clipboard item?"].buttons["Delete"].tap()
+        XCTAssertTrue(app.buttons[id].waitForNonExistence(timeout: 5))
+        return id
+    }
+
+    @MainActor func testManualPasteURL() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--history-ui-qa", "-AppleLanguages", "(en)", "-setupGuide.dismissed", "YES", "-ui.language", "en"]
+        let url = URL(string: "https://example.com/manual-clipboard?test=url#history")!
+        UIPasteboard.general.setItems([["public.url": url]], options: [.localOnly: true])
+        app.launch()
+        app.buttons["Paste"].tap()
+        allowPasteIfAsked()
+        XCTAssertTrue(app.staticTexts[url.absoluteString].waitForExistence(timeout: 8))
+    }
+
+    @MainActor private func openClipboardHistory() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--history-ui-qa", "--test-clipboard", "-AppleLanguages", "(en)", "-setupGuide.dismissed", "YES", "-ui.language", "en"]
+        app.launch()
+        return app
+    }
+
+    @MainActor private func allowPasteIfAsked() {
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = system.alerts.buttons.matching(NSPredicate(format: "label IN %@", ["Allow Paste", "允许粘贴", "允許貼上"])).firstMatch
+        if allow.waitForExistence(timeout: 5) { allow.tap() }
+    }
+
+    @MainActor func testClipboardImportOnReturn() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--history-ui-qa", "--test-clipboard", "-AppleLanguages", "(en)", "-setupGuide.dismissed", "YES", "-ui.language", "en"]
+        app.launch()
+
+        let captureSwitch = app.switches["Save clipboard while app is open"]
+        let tabs = app.tabBars.firstMatch
+        tabs.buttons["Settings"].tap()
+        app.buttons["Privacy & Security"].tap()
+        XCTAssertTrue(captureSwitch.waitForExistence(timeout: 5))
+        if captureSwitch.value as? String == "1" { captureSwitch.switches.firstMatch.tap() }
+        tabs.buttons["History"].tap()
+
+        let enable = app.buttons["Enable automatic saving"]
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        enable.tap()
+        XCTAssertTrue(enable.waitForNonExistence(timeout: 5))
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5) || app.state == .runningBackgroundSuspended)
+        let text = "Clipboard collected on return"
+        let url = URL(string: "https://example.com/clipboard?test=url#history")!
+        let items: [[String: Any]] = [["public.utf8-plain-text": text], ["public.url": url]]
+        UIPasteboard.general.setItems(items, options: [.localOnly: true])
+        app.activate()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allowPaste = springboard.alerts.buttons.matching(NSPredicate(
+            format: "label IN %@", ["Allow Paste", "允许粘贴", "允許貼上"]
+        )).firstMatch
+        if allowPaste.waitForExistence(timeout: 5) { allowPaste.tap() }
+        XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts[url.absoluteString].waitForExistence(timeout: 5))
+
+        tabs.buttons["Settings"].tap()
+        captureSwitch.switches.firstMatch.tap()
+        XCTAssertEqual(captureSwitch.value as? String, "0")
+    }
+
     @MainActor func testHistoryActions() {
         continueAfterFailure = false
         let app = XCUIApplication()

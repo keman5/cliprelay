@@ -26,23 +26,39 @@ enum ClipboardPaste {
     static func isPrivate(_ providers: [NSItemProvider]) -> Bool {
         providers.contains { !privateTypes.isDisjoint(with: $0.registeredTypeIdentifiers) }
     }
-    static let types: [UTType] = [.fileURL, .rtf, .html, .image, .plainText, .data]
+
+    @MainActor static func keyboardText(_ providers: [NSItemProvider]) async throws -> String? {
+        for provider in providers {
+            guard !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }
+            if let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .url) == true }) {
+                return try await loadLink(provider, type: type).absoluteString
+            }
+            if let text = await loadText(provider), !text.isEmpty { return text }
+        }
+        return nil
+    }
+    private static let types: [UTType] = [.url, .rtf, .html, .image, .plainText, .data]
 
     @MainActor static func load(_ provider: NSItemProvider) async throws -> Clip {
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            let url: URL = try await withCheckedThrowingContinuation { reply in
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
-                    if let url = item as? URL { reply.resume(returning: url) }
-                    else { reply.resume(throwing: error ?? RelayFailure.invalid) }
-                }
-            }
-            return try fileClip(url)
+            return try await fileClip(loadURL(provider, type: UTType.fileURL.identifier))
         }
         let identifiers = provider.registeredTypeIdentifiers
-        let chosen = types.dropFirst().compactMap { group in
+        let chosen = types.compactMap { group in
             identifiers.first { UTType($0)?.conforms(to: group) == true }
         }.first
         guard let chosen else { throw RelayFailure.invalid }
+        if UTType(chosen)?.conforms(to: .url) == true {
+            let url = try await loadLink(provider, type: chosen)
+            let clip = Clip.text(url.absoluteString)
+            try clip.validate()
+            return clip
+        }
+        if UTType(chosen)?.conforms(to: .plainText) == true, let plain = await loadText(provider) {
+            let clip = Clip.text(plain)
+            try clip.validate()
+            return clip
+        }
         let name = provider.suggestedName
         var clip: Clip = try await withCheckedThrowingContinuation { reply in
             provider.loadFileRepresentation(forTypeIdentifier: chosen) { url, error in
@@ -52,19 +68,48 @@ enum ClipboardPaste {
                 } catch { reply.resume(throwing: error) }
             }
         }
-        if clip.kind == "Rich text", provider.canLoadObject(ofClass: NSString.self) {
-            let plain: String? = await withCheckedContinuation { reply in
-                _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                    reply.resume(returning: (object as? NSString).map(String.init))
-                }
-            }
-            if let plain, plain.utf8.count <= Clip.limit - clip.bytes.count {
-                clip.plain = plain
-                clip.name = Clip.preview(plain)
-            }
+        if clip.kind == "Rich text", let plain = await loadText(provider), plain.utf8.count <= Clip.limit - clip.bytes.count {
+            clip.plain = plain
+            clip.name = Clip.preview(plain)
         }
         try clip.validate()
         return clip
+    }
+
+    private static func link(_ url: URL?) -> URL? {
+        guard let url, url.scheme != nil, !url.isFileURL else { return nil }
+        return url
+    }
+
+    @MainActor private static func loadLink(_ provider: NSItemProvider, type: String) async throws -> URL {
+        // Safari can return a temporary file URL from loadItem; read public.url's data first.
+        let data: Data? = await withCheckedContinuation { reply in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                reply.resume(returning: data)
+            }
+        }
+        if let data, let url = link(URL(dataRepresentation: data, relativeTo: nil)) { return url }
+        if let url = link(try? await loadURL(provider, type: type)) { return url }
+        if let text = await loadText(provider), let url = link(URL(string: text)) { return url }
+        throw RelayFailure.invalid
+    }
+
+    @MainActor private static func loadURL(_ provider: NSItemProvider, type: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { reply in
+            provider.loadItem(forTypeIdentifier: type, options: nil) { item, error in
+                if let url = item as? URL { reply.resume(returning: url) }
+                else { reply.resume(throwing: error ?? RelayFailure.invalid) }
+            }
+        }
+    }
+
+    @MainActor private static func loadText(_ provider: NSItemProvider) async -> String? {
+        guard provider.canLoadObject(ofClass: NSString.self) else { return nil }
+        return await withCheckedContinuation { reply in
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                reply.resume(returning: (object as? NSString).map(String.init))
+            }
+        }
     }
 }
 #endif

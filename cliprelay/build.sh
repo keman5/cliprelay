@@ -53,11 +53,42 @@ build_target() {
     CURRENT_PROJECT_VERSION="$build_number" "$@" build
 }
 
-if [[ "${1:-}" == --history-ui-qa ]]; then
+if [[ "${1:-}" == --history-ui-qa || "${1:-}" == --safari-link-qa ]]; then
+  qa_mode=$1
+  shift
+  if [[ "$qa_mode" == --safari-link-qa ]]; then
+    fixture=$(mktemp -d)
+    node -e '
+      const fs = require("node:fs");
+      const server = require("node:http").createServer((_, response) => {
+        response.setHeader("Content-Type", "text/html; charset=utf-8");
+        response.end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+          <title>ClipRelay QA</title><p style="padding:40px"><a href="?copied=link#history">ClipRelay test link</a></p>`);
+      });
+      server.listen(0, "127.0.0.1", () => fs.writeFileSync(process.argv[1], `http://127.0.0.1:${server.address().port}/`));
+    ' "$fixture/url" &
+    fixture_server=$!
+    trap 'kill "$fixture_server" 2>/dev/null || true; wait "$fixture_server" 2>/dev/null || true; rm -rf "$fixture"' EXIT
+    for _ in {1..50}; do
+      [[ -s "$fixture/url" ]] && break
+      sleep .1
+    done
+    export TEST_RUNNER_CLIPRELAY_SAFARI_URL="$(cat "$fixture/url")"
+    if [[ $# == 0 ]]; then
+      set -- -only-testing:ClipRelayHistoryUITests/HistoryUITests/testSafariCopyAddress \
+        -only-testing:ClipRelayHistoryUITests/HistoryUITests/testSafariCopyLink
+    fi
+  else
+    if [[ $# == 0 ]]; then
+      set -- -skip-testing:ClipRelayHistoryUITests/HistoryUITests/testKeyboardCapturesCopiedURL
+    fi
+    set -- -skip-testing:ClipRelayHistoryUITests/HistoryUITests/testSafariCopyAddress \
+      -skip-testing:ClipRelayHistoryUITests/HistoryUITests/testSafariCopyLink "$@"
+  fi
   xcodebuild -quiet -project ClipRelay.xcodeproj -scheme ClipRelayPhone -configuration Debug \
     -destination "id=$sim" -derivedDataPath "$build_root/ios" \
     SYMROOT="$build_root/ios/Build/Products" OBJROOT="$build_root/ios/Build/Intermediates.noindex" \
-    CURRENT_PROJECT_VERSION="$build_number" -parallel-testing-enabled NO test
+    CURRENT_PROJECT_VERSION="$build_number" -parallel-testing-enabled NO "$@" test
   exit
 fi
 build_target mac ClipRelayMac 'platform=macOS' CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Development'

@@ -31,6 +31,8 @@ final class Keyboard: UIInputViewController {
     private var query="", page=0, filter="", candidatePage=0
     private var hint=""
     private var library: Library?
+    private var clipboardMonitor: Task<Void, Never>?
+    private var readingClipboard = false
     private var lastSetupResponse: String?
     private lazy var dictionary: [String:String] = {
         guard let url=Bundle.main.url(forResource:"pinyin",withExtension:"json"),let data=try? Data(contentsOf:url) else {return [:]}
@@ -40,6 +42,7 @@ final class Keyboard: UIInputViewController {
     private let localize = ClipRelayPreferences.localized
     override func viewDidLoad() {
         super.viewDidLoad()
+        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.url.identifier, UTType.plainText.identifier])
         stack.axis = .vertical
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
@@ -75,11 +78,21 @@ final class Keyboard: UIInputViewController {
     }
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        clipboardMonitor?.cancel()
+        clipboardMonitor = nil
         clearQuery()
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if !answerSetupCheck() { captureClipboard() }
+        guard !answerSetupCheck(), hasFullAccess, ClipRelayPreferences.keyboardCapturesClipboard, library != nil else { return }
+        clipboardMonitor?.cancel()
+        clipboardMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.captureClipboard()
+                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+            }
+        }
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -102,36 +115,66 @@ final class Keyboard: UIInputViewController {
         return true
     }
 
-    private func captureClipboard() {
-        guard hasFullAccess, ClipRelayPreferences.keyboardCapturesClipboard, let library else { return }
+    private func captureClipboard() async {
+        guard hasFullAccess, !ClipRelayPreferences.historyLocked, let library, !readingClipboard,
+              ClipRelayPreferences.keyboardCapturesClipboard else { return }
         let pasteboard = UIPasteboard.general
         let version = pasteboard.changeCount
-        guard !ClipRelayPreferences.skipPausedCopy(version: version, key: ClipRelayPreferences.keyboardCaptureKey) else { return }
-        guard version != ClipRelayPreferences.keyboardPasteboardVersion, pasteboard.hasStrings else { return }
-        guard ClipboardPaste.privateTypes.isDisjoint(with: pasteboard.types), !pasteboard.hasImages, !pasteboard.hasURLs else {
+        guard !ClipRelayPreferences.skipPausedCopy(version: version, key: ClipRelayPreferences.keyboardCaptureKey),
+              version != ClipRelayPreferences.keyboardPasteboardVersion else { return }
+        guard (pasteboard.hasStrings || pasteboard.hasURLs), !pasteboard.hasImages,
+              !pasteboard.types.contains(UTType.fileURL.identifier),
+              ClipboardPaste.privateTypes.isDisjoint(with: pasteboard.types) else {
             ClipRelayPreferences.keyboardPasteboardVersion = version
             return
         }
-        guard let text = pasteboard.string else {
-            // UIKit does not expose whether a failed pasteboard read was denied.
-            ClipRelayPreferences.keyboardCapturesClipboard = false
-            hint = localize("Pasteboard capture paused")
+        readingClipboard = true
+        defer { readingClipboard = false }
+        await saveClipboard(pasteboard.itemProviders, version: version, in: library, manually: false)
+    }
+
+    override func paste(itemProviders: [NSItemProvider]) {
+        guard hasFullAccess, !ClipRelayPreferences.historyLocked, let library else { return }
+        let pasteboard = UIPasteboard.general
+        guard ClipboardPaste.privateTypes.isDisjoint(with: pasteboard.types) else {
+            hint = localize("Private clipboard content was skipped")
             render()
             return
         }
-        guard pasteboard.changeCount == version else { return }
+        let version = pasteboard.changeCount
+        Task { await saveClipboard(itemProviders, version: version, in: library, manually: true) }
+    }
+
+    private func saveClipboard(_ providers: [NSItemProvider], version: Int, in library: Library, manually: Bool) async {
+        guard !ClipboardPaste.isPrivate(providers) else {
+            ClipRelayPreferences.keyboardPasteboardVersion = version
+            if manually { hint = localize("Private clipboard content was skipped"); render() }
+            return
+        }
+        let text = try? await ClipboardPaste.keyboardText(providers)
+        guard !Task.isCancelled, self.library === library, viewIfLoaded?.window != nil,
+              UIPasteboard.general.changeCount == version, hasFullAccess, !ClipRelayPreferences.historyLocked,
+              manually || (!ClipRelayPreferences.paused && ClipRelayPreferences.keyboardCapturesClipboard) else { return }
         ClipRelayPreferences.keyboardPasteboardVersion = version
-        guard !text.isEmpty, text.utf8.count <= Clip.limit else { return }
+        guard let text else {
+            hint = localize(manually ? "No clipboard content could be read." : "Clipboard could not be read. Tap Paste to add it manually.")
+            if clips, draft == nil, splitText == nil { render() }
+            return
+        }
         do {
             let clip = Clip.text(text)
-            let send = ClipRelayPreferences.keyboardSendsClipboard
+            let send = !manually && ClipRelayPreferences.keyboardSendsClipboard
             let ids = try library.saveCopies([clip], source: "Keyboard", sendToPeers: send, privateToDevice: !send)
             if send { Task { await ExtensionDelivery.attempt(library, ids: ids) } }
+            if manually { pinnedOnly = false; filter = ""; listOffset = .zero }
             page = 0
+            hint = ""
         } catch {
             hint = error.localizedDescription
         }
-        render()
+        if clips, draft == nil, splitText == nil {
+            render()
+        }
     }
     private enum IconRole: CGFloat { case toolbar = 16, circle = 13, action = 12, disclosure = 9 }
     private func glyph(_ name: String, role: IconRole) -> UIImage? {
@@ -385,8 +428,15 @@ final class Keyboard: UIInputViewController {
         gear.menu = UIMenu(children: [UIAction(title: localize("Keyboard"), image: UIImage(systemName: "keyboard")) { [weak self] _ in self?.clips = false; self?.render() },
                                       UIAction(title: localize("Next keyboard"), image: UIImage(systemName: "globe")) { [weak self] _ in self?.advanceToNextInputMode() }])
         gear.showsMenuAsPrimaryAction = true
+        let pasteStyle = UIPasteControl.Configuration()
+        pasteStyle.displayMode = .iconOnly
+        pasteStyle.baseBackgroundColor = cap
+        pasteStyle.baseForegroundColor = ink
+        let paste = UIPasteControl(configuration: pasteStyle)
+        paste.target = library == nil ? nil : self
+        paste.accessibilityIdentifier = "keyboard.paste"
         let head = UIView()
-        for control in [back, tabs, filterKey, gear] as [UIView] {
+        for control in [back, paste, tabs, filterKey, gear] as [UIView] {
             control.translatesAutoresizingMaskIntoConstraints = false; head.addSubview(control)
             control.centerYAnchor.constraint(equalTo: head.centerYAnchor).isActive = true
         }
@@ -400,6 +450,8 @@ final class Keyboard: UIInputViewController {
         }
         NSLayoutConstraint.activate([head.heightAnchor.constraint(equalToConstant: 47),
             back.leadingAnchor.constraint(equalTo: head.leadingAnchor, constant: 4), back.widthAnchor.constraint(equalToConstant: 36), back.heightAnchor.constraint(equalTo: head.heightAnchor),
+            paste.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 4),
+            paste.widthAnchor.constraint(equalToConstant: 40), paste.heightAnchor.constraint(equalToConstant: 40),
             tabs.centerXAnchor.constraint(equalTo: head.centerXAnchor), tabs.widthAnchor.constraint(equalTo: head.widthAnchor, multiplier: 0.41),
             tabs.heightAnchor.constraint(equalToConstant: 33), gear.trailingAnchor.constraint(equalTo: head.trailingAnchor, constant: -6),
             filterKey.trailingAnchor.constraint(equalTo: gear.leadingAnchor)])

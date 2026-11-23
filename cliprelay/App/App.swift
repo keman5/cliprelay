@@ -26,6 +26,7 @@ import VisionKit
     #if os(iOS)
     @Published private(set) var phoneRevision = 0
     private var phoneVersion: (Int64, Int64) = (-1, -1)
+    private var readingPhoneClipboard = false
     private var phoneSendRequested = false
     @Published var phoneRoute = ClipRelayPreferences.defaults.string(forKey: "phone.lastRoute")
     #endif
@@ -158,31 +159,72 @@ import VisionKit
         } catch { notice = error.localizedDescription }
     }
     #if os(iOS)
-    func capturePhoneClipboard() async {
+    func capturePhoneClipboard(manually: Bool = false) async {
+        #if DEBUG && targetEnvironment(simulator)
+        let arguments = ProcessInfo.processInfo.arguments
+        if !manually, arguments.contains("--history-ui-qa"), !arguments.contains("--test-clipboard") { return }
+        #endif
         let settings = ClipRelayPreferences.defaults
-        guard settings.bool(forKey: "phone.foregroundCapture") else { return }
+        let key = ClipRelayPreferences.phoneCaptureKey
+        let state = UIApplication.shared.applicationState
+        guard manually || ClipRelayPreferences.phoneCapturesClipboard, !readingPhoneClipboard,
+              manually ? state != .background : state == .active else { return }
         let board = UIPasteboard.general
         let version = board.changeCount
-        guard !ClipRelayPreferences.skipPausedCopy(version: version, key: ClipRelayPreferences.phoneCaptureKey) else { return }
-        guard settings.object(forKey: "phone.captureVersion") as? Int != version else { return }
-        settings.set(version, forKey: "phone.captureVersion")
-        guard !ClipRelayPreferences.paused, !board.types.isEmpty, ClipboardPaste.privateTypes.isDisjoint(with: board.types) else { return }
+        if !manually {
+            guard !ClipRelayPreferences.skipPausedCopy(version: version, key: key),
+                  settings.object(forKey: key) as? Int != version else { return }
+        }
+        guard board.numberOfItems > 0 else {
+            if manually { notice = ClipRelayPreferences.localized("No clipboard content could be read.") }
+            settings.set(version, forKey: key)
+            return
+        }
+        guard ClipboardPaste.privateTypes.isDisjoint(with: board.types) else {
+            if manually { notice = ClipRelayPreferences.localized("Private clipboard content was skipped") }
+            settings.set(version, forKey: key)
+            return
+        }
+        readingPhoneClipboard = true
+        defer { readingPhoneClipboard = false }
         let providers = board.itemProviders
-        guard !providers.isEmpty else { return }
-        guard !ClipboardPaste.isPrivate(providers) else { return }
+        guard !Task.isCancelled, board.changeCount == version else { return }
+        if ClipboardPaste.isPrivate(providers) {
+            if manually { notice = ClipRelayPreferences.localized("Private clipboard content was skipped") }
+            settings.set(version, forKey: key)
+            return
+        }
+        if providers.isEmpty {
+            guard UIApplication.shared.applicationState == .active else { return }
+            settings.set(version, forKey: key)
+            notice = ClipRelayPreferences.localized(manually ? "No clipboard content could be read." :
+                "Clipboard could not be read. Tap Paste to add it manually.")
+            return
+        }
         var failures: [String] = []
         var count = 0
-        for provider in providers {
+        defer { if count > 0 { reload() } }
+        for (index, provider) in providers.enumerated() {
+            let result: Result<Clip, Error>
             do {
-                let clip = try await ClipboardPaste.load(provider)
-                guard !Task.isCancelled, board.changeCount == version, !ClipRelayPreferences.paused,
-                      settings.bool(forKey: "phone.foregroundCapture") else { return }
-                try save([clip])
+                result = .success(try await ClipboardPaste.load(provider))
+            } catch {
+                result = .failure(error)
+            }
+            guard !Task.isCancelled, board.changeCount == version,
+                  manually || (!ClipRelayPreferences.paused && ClipRelayPreferences.phoneCapturesClipboard) else { return }
+            do {
+                try save([result.get()])
                 count += 1
-            } catch { failures.append((provider.suggestedName ?? ClipRelayPreferences.localized("Clipboard")) + " · " + ClipRelayPreferences.localized(error.localizedDescription)) }
+            } catch {
+                let name = provider.suggestedName ?? String(format: ClipRelayPreferences.localized("Item %lld"), index + 1)
+                failures.append(name + " · " + ClipRelayPreferences.localized(error.localizedDescription))
+            }
         }
-        if count > 0 { reload() }
-        if !failures.isEmpty { notice = ([String(format: ClipRelayPreferences.localized("Saved %lld items"), count)] + failures).joined(separator: "\n") }
+        settings.set(version, forKey: key)
+        if manually || !failures.isEmpty {
+            notice = ([String(format: ClipRelayPreferences.localized("Saved %lld items"), count)] + failures).joined(separator: "\n")
+        }
     }
 
     private func recordPhoneRoute(_ route: String) {

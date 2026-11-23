@@ -24,6 +24,12 @@ enum ClipRelayPreferences {
     #if os(iOS)
     static let phoneCaptureKey = "phone.captureVersion"
     static let keyboardCaptureKey = "keyboard.pasteboardVersion"
+    static var phoneCapturesClipboard: Bool { defaults.bool(forKey: "phone.foregroundCapture") }
+
+    static func setPhoneCapture(_ enabled: Bool, version: Int) {
+        defaults.set(version, forKey: phoneCaptureKey)
+        defaults.set(enabled, forKey: "phone.foregroundCapture")
+    }
 
     static func updateCaptureBaselines(version: Int, pausing: Bool, store: UserDefaults = defaults) {
         for key in [phoneCaptureKey, keyboardCaptureKey] {

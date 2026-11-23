@@ -22,6 +22,7 @@ struct PhoneHistory: View {
     @State private var filters = false
     @AppStorage("phone.maskSensitive", store: ClipRelayPreferences.defaults) private var sensitive = true
     @AppStorage("phone.maskCodes", store: ClipRelayPreferences.defaults) private var codes = false
+    @AppStorage("phone.foregroundCapture", store: ClipRelayPreferences.defaults) private var capture = false
 
     private struct Search: Equatable { let text: String; let revision: Int }
     private func device(_ row: Summary) -> String {
@@ -47,12 +48,20 @@ struct PhoneHistory: View {
                         }
                         Divider()
                         HStack {
-                            PasteButton(supportedContentTypes: ClipboardPaste.types) { providers in
-                                Task { await importProviders(providers) }
-                            }.controlSize(.small).buttonBorderShape(.capsule)
+                            Button {
+                                Task { await model.capturePhoneClipboard(manually: true) }
+                            } label: {
+                                Label("Paste", systemImage: "clipboard")
+                            }.buttonStyle(.borderedProminent).controlSize(.small).buttonBorderShape(.capsule)
                             Spacer()
                             Button { importing = true } label: { Label("Import file", systemImage: "folder") }.buttonStyle(.borderless)
                         }.font(.subheadline)
+                        if !capture {
+                            Button("Enable automatic saving") {
+                                ClipRelayPreferences.setPhoneCapture(true, version: UIPasteboard.general.changeCount)
+                                model.notice = ClipRelayPreferences.localized("Copy something new, then return to ClipRelay.")
+                            }.font(.footnote).buttonStyle(.borderless)
+                        }
                     }.padding(.vertical, 5)
                 }
             }
@@ -218,15 +227,6 @@ struct PhoneHistory: View {
     private func add() {
         guard !draft.isEmpty else { return }
         model.operation { try model.save([.text(draft)]); draft = ""; writing = false }
-    }
-    private func importProviders(_ providers: [NSItemProvider]) async {
-        guard !ClipboardPaste.isPrivate(providers) else { model.notice = ClipRelayPreferences.localized("Private clipboard content was skipped"); return }
-        var errors: [String] = []
-        for (index, provider) in providers.enumerated() {
-            do { try model.save([try await ClipboardPaste.load(provider)]) }
-            catch { errors.append((provider.suggestedName ?? String(format: ClipRelayPreferences.localized("Item %lld"), index+1)) + " · " + ClipRelayPreferences.localized(error.localizedDescription)) }
-        }
-        finishImport(providers.count, errors)
     }
     private func finishImport(_ count: Int, _ errors: [String]) {
         model.reload()

@@ -1,6 +1,10 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "No clipboard content could be read.": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "No clipboard content could be read."}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "未能读取剪贴板内容。"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "無法讀取剪貼簿內容。"}}, "ja": {"stringUnit": {"state": "translated", "value": "クリップボードを読み取れませんでした。"}}, "ko": {"stringUnit": {"state": "translated", "value": "클립보드 내용을 읽을 수 없습니다."}}, "de": {"stringUnit": {"state": "translated", "value": "Die Zwischenablage konnte nicht gelesen werden."}}, "fr": {"stringUnit": {"state": "translated", "value": "Impossible de lire le contenu du presse-papiers."}}, "es": {"stringUnit": {"state": "translated", "value": "No se pudo leer el contenido del portapapeles."}}}},
+    "Enable automatic saving": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Enable automatic saving"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "开启自动保存"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "開啟自動儲存"}}, "ja": {"stringUnit": {"state": "translated", "value": "自動保存をオンにする"}}, "ko": {"stringUnit": {"state": "translated", "value": "자동 저장 켜기"}}, "de": {"stringUnit": {"state": "translated", "value": "Automatisches Speichern aktivieren"}}, "fr": {"stringUnit": {"state": "translated", "value": "Activer l’enregistrement automatique"}}, "es": {"stringUnit": {"state": "translated", "value": "Activar el guardado automático"}}}},
+    "Copy something new, then return to ClipRelay.": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Copy something new, then return to ClipRelay."}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "复制一条新内容，再回到随贴。"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "複製一筆新內容，再回到隨貼。"}}, "ja": {"stringUnit": {"state": "translated", "value": "新しい内容をコピーして ClipRelay に戻ってください。"}}, "ko": {"stringUnit": {"state": "translated", "value": "새 내용을 복사한 후 ClipRelay로 돌아오세요."}}, "de": {"stringUnit": {"state": "translated", "value": "Kopiere einen neuen Inhalt und kehre zu ClipRelay zurück."}}, "fr": {"stringUnit": {"state": "translated", "value": "Copiez un nouvel élément, puis revenez dans ClipRelay."}}, "es": {"stringUnit": {"state": "translated", "value": "Copia algo nuevo y vuelve a ClipRelay."}}}},
+    "Clipboard could not be read. Tap Paste to add it manually.": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Clipboard could not be read. Tap Paste to add it manually."}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "未能读取剪贴板。点「粘贴」即可手动添加。"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "無法讀取剪貼簿。點「貼上」即可手動加入。"}}, "ja": {"stringUnit": {"state": "translated", "value": "クリップボードを読み取れませんでした。「ペースト」をタップして追加してください。"}}, "ko": {"stringUnit": {"state": "translated", "value": "클립보드를 읽을 수 없습니다. 붙여넣기를 눌러 직접 추가하세요."}}, "de": {"stringUnit": {"state": "translated", "value": "Die Zwischenablage konnte nicht gelesen werden. Tippe zum Hinzufügen auf „Einfügen“."}}, "fr": {"stringUnit": {"state": "translated", "value": "Lecture du presse-papiers impossible. Touchez « Coller » pour ajouter le contenu."}}, "es": {"stringUnit": {"state": "translated", "value": "No se pudo leer el portapapeles. Toca « Pegar » para añadir el contenido."}}}},
     "Fingerprint": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Fingerprint"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "指纹"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "指紋"}}, "ja": {"stringUnit": {"state": "translated", "value": "指紋"}}, "ko": {"stringUnit": {"state": "translated", "value": "지문"}}, "de": {"stringUnit": {"state": "translated", "value": "Fingerabdruck"}}, "fr": {"stringUnit": {"state": "translated", "value": "Empreinte"}}, "es": {"stringUnit": {"state": "translated", "value": "Huella"}}}},
     "Lock history": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Lock history"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "锁定历史"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "鎖定記錄"}}, "ja": {"stringUnit": {"state": "translated", "value": "履歴をロック"}}, "ko": {"stringUnit": {"state": "translated", "value": "기록 잠금"}}, "de": {"stringUnit": {"state": "translated", "value": "Verlauf sperren"}}, "fr": {"stringUnit": {"state": "translated", "value": "Verrouiller l’historique"}}, "es": {"stringUnit": {"state": "translated", "value": "Bloquear historial"}}}},
     "Paired": {"extractionState": "manual", "localizations": {"en": {"stringUnit": {"state": "translated", "value": "Paired"}}, "zh-Hans": {"stringUnit": {"state": "translated", "value": "配对时间"}}, "zh-Hant": {"stringUnit": {"state": "translated", "value": "配對時間"}}, "ja": {"stringUnit": {"state": "translated", "value": "ペアリング日時"}}, "ko": {"stringUnit": {"state": "translated", "value": "페어링 날짜"}}, "de": {"stringUnit": {"state": "translated", "value": "Gekoppelt am"}}, "fr": {"stringUnit": {"state": "translated", "value": "Jumelé le"}}, "es": {"stringUnit": {"state": "translated", "value": "Fecha de enlace"}}}},
@@ -6912,55 +6916,55 @@
         }
       }
     },
-    "Save copied text when keyboard appears": {
+    "Automatically save copied text and links": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Save copied text when keyboard appears"
+            "value": "Automatically save copied text and links"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "切入键盘时保存已复制文本"
+            "value": "自动保存复制的文字和链接"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "切換至鍵盤時儲存已複製文字"
+            "value": "自動儲存複製的文字和連結"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "キーボード表示時にコピーしたテキストを保存"
+            "value": "コピーしたテキストとリンクを自動保存"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "키보드가 나타날 때 복사한 텍스트 저장"
+            "value": "복사한 텍스트와 링크 자동 저장"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Beim Öffnen der Tastatur kopierten Text sichern"
+            "value": "Kopierte Texte und Links automatisch sichern"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enregistrer le texte copié à l’affichage du clavier"
+            "value": "Enregistrer automatiquement le texte et les liens copiés"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Guardar texto copiado al mostrar el teclado"
+            "value": "Guardar automáticamente el texto y los enlaces copiados"
           }
         }
       }

@@ -81,8 +81,9 @@ struct Home: View {
         .onChange(of: theme) { _, value in ClipRelayPreferences.theme = value }
         .onChange(of: phase) { _, value in if value == .background { lockGeneration += 1; unlocked = false; model.notice = "" } }
         .onChange(of: locked) { _, _ in unlocked = false }
-        .task(id: phase == .active && (!locked || unlocked)) {
-            guard phase == .active, !locked || unlocked else { return }
+        // The system paste permission alert may make this scene temporarily inactive.
+        .task(id: phase != .background && (!locked || unlocked)) {
+            guard phase != .background, !locked || unlocked else { return }
             while !Task.isCancelled {
                 await model.capturePhoneClipboard()
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -175,7 +176,7 @@ struct Home: View {
     private var keyboardSettings: some View {
         Section("Keyboard preferences") {
             KeyboardStartupOptions()
-            Toggle("Save copied text when keyboard appears", isOn:$keyboardCapture)
+            Toggle("Automatically save copied text and links", isOn:$keyboardCapture)
             Toggle("Send keyboard imports to paired devices", isOn:$keyboardSend)
                 .disabled(!keyboardCapture)
             Text("Keyboard imports can contain sensitive text. Sending uses paired devices and the cloud relay if enabled.")

@@ -98,8 +98,9 @@ struct PhonePrivacyStorage: View {
     }
     private var privacySettings: some View {
         Section {
-            Toggle("Save clipboard while app is open", isOn: $capture)
-                .onChange(of: capture) { _, _ in ClipRelayPreferences.defaults.set(UIPasteboard.general.changeCount, forKey: "phone.captureVersion") }
+            Toggle("Save clipboard while app is open", isOn: Binding(get: { capture }, set: {
+                ClipRelayPreferences.setPhoneCapture($0, version: UIPasteboard.general.changeCount)
+            }))
             Toggle("在历史列表中打码", isOn: $sensitive)
             Toggle("验证码列表和详情打码", isOn: $codes)
             Toggle("Lock history", isOn: Binding(get: { locked }, set: { value in
