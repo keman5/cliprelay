@@ -21,6 +21,12 @@ if [[ "${1:-}" == --keyboard-setup-qa ]]; then
   "$qa_dir/check"
   exit
 fi
+if [[ ! -s Keyboard/pinyin.json || scripts/make-pinyin.swift -nt Keyboard/pinyin.json ]]; then
+  swift scripts/make-pinyin.swift Keyboard/pinyin.json
+fi
+xcodegen generate
+if [[ "${1:-}" == --prepare ]]; then exit 0; fi
+
 build_root="${CLIPRELAY_BUILD_ROOT:-$HOME/Library/Caches/ClipRelayBuild}"
 if [[ "$mac_only" == false && -z "$device" && "${1:-}" != --mac-view-qa ]]; then
   sim="${CLIPRELAY_SIM:-$(xcrun simctl list devices available -j | node -e 'let s="";process.stdin.on("data",v=>s+=v).on("end",()=>console.log(Object.values(JSON.parse(s).devices).flat().find(d=>d.name==="ClipRelay-QA")?.udid||""))')}"
@@ -36,11 +42,7 @@ if [[ "$mac_only" == false && -z "$device" && "${1:-}" != --mac-view-qa ]]; then
   fi
   if ! xcrun simctl list devices booted | grep -F "$sim" >/dev/null; then xcrun simctl boot "$sim"; fi
 fi
-mkdir -p Resources "$build_root"
-if [[ ! -s Keyboard/pinyin.json || scripts/make-pinyin.swift -nt Keyboard/pinyin.json ]]; then
-  swift scripts/make-pinyin.swift Keyboard/pinyin.json
-fi
-xcodegen generate
+mkdir -p "$build_root"
 build_number=$(date -u +%y%m%d%H%M%S)
 
 build_target() {

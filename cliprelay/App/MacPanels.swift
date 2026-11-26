@@ -374,6 +374,7 @@ struct MacSettingsPanel: View {
     @AppStorage("ui.language") private var language = "system"
     @AppStorage("ui.theme") private var theme = "system"
     @AppStorage("mac.showMenuBarIcon") private var menuBarIcon = true
+    @AppStorage("mac.showDockIcon") private var dockIcon = true
     @AppStorage("mac.playSyncSound") private var sound = false
     @AppStorage("mac.shortcutKeyCode") private var keyCode = MacMenuShortcut.defaultKeyCode
     @AppStorage("mac.shortcutModifiers") private var modifiers = MacMenuShortcut.defaultModifiers
@@ -434,6 +435,8 @@ struct MacSettingsPanel: View {
             }
             Divider()
             toggle("菜单栏图标", "在菜单栏常驻随贴图标", $menuBarIcon)
+            Divider()
+            toggle("Dock 图标", "关闭后可通过菜单栏或快捷键打开随贴", $dockIcon)
             Divider()
             toggle("同步提示音", "收到新剪贴板内容时播放提示音", $sound)
             Divider()

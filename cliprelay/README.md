@@ -41,7 +41,7 @@
 需要 Xcode、XcodeGen、Node 和可用的 Apple Development 签名。以下命令在仓库根目录执行。
 
 ```sh
-cliprelay/build.sh
+scripts/build.sh
 node cliprelay/scripts/verify.mjs
 node cliprelay/scripts/verify-cloud.mjs
 cliprelay/build.sh --mac-view-qa
@@ -53,3 +53,12 @@ cliprelay/build.sh --history-ui-qa
 复验包括双向文本、断开直连后的真实 R2 双向 10 MB 收发、凭据隔离、重复提交、错误口令、损坏数据、跨平台恢复、分页刷新和三个独立身份的一跳接力。Mac 视图用隐藏宿主检查，iOS 系统键盘需在模拟器内另外验收。
 
 重新部署测试中继使用 `cliprelay/cloud/deploy.sh`，它复用本机凭据。完整设计和后续范围见 [项目设计](../docs/clipnote-device-clipboard-design.md)。
+
+## App Store 本地打包
+
+```sh
+scripts/build.sh --app-store ios
+scripts/build.sh --app-store macos
+```
+
+使用 Xcode 中配置的开发者团队和分发签名。本地归档和导出包（iOS 为 IPA，macOS 为 PKG）存放在 `${CLIPRELAY_BUILD_ROOT:-~/Library/Caches/ClipRelayBuild}/app-store`，按平台和构建号分目录。构建号自动生成，商店显示版本由 `project.yml` 的 `MARKETING_VERSION` 设置。

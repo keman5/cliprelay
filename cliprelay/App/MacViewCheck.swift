@@ -45,6 +45,7 @@ enum MacViewCheck {
               shortcuts.registerShortcut(key: kVK_F19, modifiers: flags)
         else { throw RelayFailure.invalid }
         print("PASS conflicting shortcut rejected while previous shortcut remains registered")
+        try checkDockVisibility(application, shortcuts: shortcuts, modifiers: flags)
         try checkSettings(in: root.appendingPathComponent("settings"))
         let size = NSSize(width: 980, height: 600)
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -4000, y: -4000), size: size),
@@ -70,6 +71,16 @@ enum MacViewCheck {
         print("PASS hidden Mac workspace pages and menu layout")
         try checkWorkspaceFocus(model, size: size)
         try checkDeleteShortcut(model, size: size)
+    }
+
+    @MainActor private static func checkDockVisibility(_ application: NSApplication, shortcuts: MacMenuController,
+                                                       modifiers: Int) throws {
+        defer { application.setActivationPolicy(.prohibited) }
+        shortcuts.preferences(menuBarVisible: true, dockVisible: false, key: kVK_F19, modifiers: modifiers)
+        guard application.activationPolicy() == .accessory, !application.isActive else { throw RelayFailure.invalid }
+        shortcuts.preferences(menuBarVisible: true, dockVisible: true, key: kVK_F19, modifiers: modifiers)
+        guard application.activationPolicy() == .regular, !application.isActive else { throw RelayFailure.invalid }
+        print("PASS Dock visibility switches without activating the app")
     }
 
     private static func checkLongHistorySearch(in root: URL) throws {

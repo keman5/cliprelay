@@ -334,9 +334,11 @@ private struct MacMenuRowStyle: ButtonStyle {
         }, 1, &event, Unmanaged.passUnretained(self).toOpaque(), &handler)
     }
 
-    func preferences(visible: Bool, key: Int, modifiers: Int) {
-        status?.isVisible = visible
+    func preferences(menuBarVisible: Bool, dockVisible: Bool, key: Int, modifiers: Int) {
         _ = registerShortcut(key: key, modifiers: modifiers)
+        status?.isVisible = menuBarVisible || (!dockVisible && registeredShortcut == nil)
+        let policy: NSApplication.ActivationPolicy = dockVisible ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
 
     func registerShortcut(key: Int, modifiers: Int) -> Bool {
@@ -493,6 +495,7 @@ struct MacWorkspaceWindow: View {
     @ObservedObject var menu: MacMenuController
     @Environment(\.openWindow) private var openWindow
     @AppStorage("mac.showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("mac.showDockIcon") private var showDockIcon = true
     @AppStorage("mac.shortcutKeyCode") private var shortcutKey = MacMenuShortcut.defaultKeyCode
     @AppStorage("mac.shortcutModifiers") private var shortcutModifiers = MacMenuShortcut.defaultModifiers
 
@@ -502,11 +505,16 @@ struct MacWorkspaceWindow: View {
             .onAppear {
                 let open = openWindow
                 menu.configure(model: model) { open(id: "history") }
-                menu.preferences(visible: showMenuBarIcon, key: shortcutKey, modifiers: shortcutModifiers)
+                applyPreferences()
             }
-            .onChange(of: [showMenuBarIcon ? 1 : 0, shortcutKey, shortcutModifiers]) {
-                menu.preferences(visible: showMenuBarIcon, key: shortcutKey, modifiers: shortcutModifiers)
+            .onChange(of: [showMenuBarIcon ? 1 : 0, showDockIcon ? 1 : 0, shortcutKey, shortcutModifiers]) {
+                applyPreferences()
             }
+    }
+
+    private func applyPreferences() {
+        menu.preferences(menuBarVisible: showMenuBarIcon, dockVisible: showDockIcon,
+                         key: shortcutKey, modifiers: shortcutModifiers)
     }
 }
 #endif
